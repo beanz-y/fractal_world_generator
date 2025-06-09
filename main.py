@@ -355,7 +355,6 @@ class FractalWorldGenerator:
         self.y_range_div_2, self.y_range_div_pi = self.y_range / 2.0, self.y_range / np.pi
         self.sin_iter_phi = np.sin(np.arange(2 * self.x_range) * 2 * np.pi / self.x_range)
         
-        # MODIFIED: Removed incorrect .get() calls
         num_faults = self.params['faults']
         for i in range(num_faults):
             self._add_fault()
@@ -367,7 +366,7 @@ class FractalWorldGenerator:
         temp_map[temp_map == self.INT_MIN_PLACEHOLDER] = 0
         self.world_map = np.cumsum(temp_map, axis=1)
         
-        self._apply_erosion(self.params.get('erosion', 0))
+        self._apply_erosion(self.params.get('erosion'))
         
         if self.progress_callback: self.progress_callback(70, "Finalizing map...")
         self.finalize_map(
@@ -399,6 +398,7 @@ class FractalWorldGenerator:
         self.color_map = np.zeros_like(self.world_map, dtype=np.uint8)
         
         water_mask = self.world_map < water_level_threshold
+        # MODIFIED: Corrected the typo here
         land_mask = ~water_mask
         
         water_min, water_max = min_z, water_level_threshold
@@ -435,6 +435,10 @@ class App(tk.Tk):
         
         self.pil_image, self.tk_image, self.generator = None, None, None
         
+        self.zoom = 1.0
+        self.view_offset = [0, 0]
+        self.pan_start_pos = None
+
         self.main_frame = ttk.Frame(self, padding="10")
         self.main_frame.pack(fill=tk.BOTH, expand=True)
         self.controls_frame = ttk.Labelframe(self.main_frame, text="Controls", padding="10")
@@ -459,6 +463,11 @@ class App(tk.Tk):
         }
         self._create_control_widgets()
         self.tooltip = MapTooltip(self)
+        self.canvas.bind("<Configure>", self.redraw_canvas)
+        self.canvas.bind("<MouseWheel>", self._on_zoom)
+        self.canvas.bind("<ButtonPress-1>", self._on_pan_start)
+        self.canvas.bind("<ButtonRelease-1>", self._on_pan_end)
+        self.canvas.bind("<B1-Motion>", self._on_pan_move)
         self.canvas.bind("<Motion>", self._on_map_hover)
         self.canvas.bind("<Leave>", self._on_map_leave)
         
@@ -535,6 +544,7 @@ class App(tk.Tk):
         ttk.Entry(self.controls_frame, textvariable=var, width=7).grid(row=row+1, column=2, sticky='w', padx=5)
 
     def on_style_change(self):
+        if not self.generator: return
         style = self.params['map_style'].get()
         if style == 'Biome':
             self.palette_combobox.set('Biome')
@@ -543,30 +553,18 @@ class App(tk.Tk):
         self.apply_predefined_palette(None)
 
     def _on_map_hover(self, event):
-        if not hasattr(self, 'generator') or not self.generator or not self.generator.pil_image:
+        # MODIFIED: Changed check to handle numpy array correctly
+        if not hasattr(self, 'generator') or self.generator is None or self.generator.color_map is None:
             self.tooltip.hide()
             return
-        
-        canvas = event.widget
-        img_w, img_h = self.generator.pil_image.size
-        canvas_w, canvas_h = canvas.winfo_width(), canvas.winfo_height()
-        
-        scale = min(canvas_w / img_w, canvas_h / img_h)
-        scaled_w, scaled_h = int(img_w * scale), int(img_h * scale)
-        offset_x = (canvas_w - scaled_w) // 2
-        offset_y = (canvas_h - scaled_h) // 2
-        
-        if offset_x < event.x < offset_x + scaled_w and offset_y < event.y < offset_y + scaled_h:
-            map_x = int((event.x - offset_x) / scale)
-            map_y = int((event.y - offset_y) / scale)
             
-            if 0 <= map_x < img_w and 0 <= map_y < img_h:
-                color_index = self.generator.color_map.T[map_y, map_x]
-                biome_name = self.get_biome_name_from_index(color_index)
-                if biome_name:
-                    self.tooltip.show(biome_name, event.x_root, event.y_root)
-                else:
-                    self.tooltip.hide()
+        map_x, map_y = self.canvas_to_image_coords(event.x, event.y)
+        
+        if 0 <= map_x < self.generator.x_range and 0 <= map_y < self.generator.y_range:
+            color_index = self.generator.color_map.T[map_y, map_x]
+            name = self.get_biome_name_from_index(color_index)
+            if name:
+                self.tooltip.show(name, event.x_root, event.y_root)
             else:
                 self.tooltip.hide()
         else:
@@ -599,6 +597,8 @@ class App(tk.Tk):
 
     def start_generation(self):
         self.set_ui_state(is_generating=True)
+        self.zoom = 1.0
+        self.view_offset = [0, 0]
         params_dict = {key: var.get() for key, var in self.params.items()}
         thread = threading.Thread(target=self.run_generation_in_thread, args=(params_dict,), daemon=True)
         thread.start()
@@ -610,7 +610,7 @@ class App(tk.Tk):
         self.after(0, self.finalize_generation)
 
     def finalize_generation(self):
-        self.on_canvas_resize(None)
+        self.redraw_canvas()
         self.set_ui_state(is_generating=False)
         self.status_label.config(text="Ready")
 
@@ -620,24 +620,76 @@ class App(tk.Tk):
             self.status_label.config(text=text)
         ))
 
-    def on_canvas_resize(self, event):
+    def redraw_canvas(self, event=None):
         if not hasattr(self, 'generator') or not self.generator or not self.generator.pil_image: return
         self.tooltip.hide()
+        
         pil_image = self.generator.pil_image
-        canvas_width = self.canvas.winfo_width()
-        canvas_height = self.canvas.winfo_height()
+        canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
 
-        if canvas_width <= 1 or canvas_height <= 1: return
+        if canvas_w <= 1 or canvas_h <= 1: return
         
         img_w, img_h = pil_image.size
-        scale = min(canvas_width / img_w, canvas_height / img_h)
-        new_size = (int(img_w * scale), int(img_h * scale))
+        view_w = img_w / self.zoom
+        view_h = img_h / self.zoom
+        x0 = self.view_offset[0]
+        y0 = self.view_offset[1]
+
+        x0 = max(0, min(x0, img_w - view_w))
+        y0 = max(0, min(y0, img_h - view_h))
+        self.view_offset = [x0, y0]
+
+        cropped_image = pil_image.crop((x0, y0, x0 + view_w, y0 + view_h))
         
-        resized_image = pil_image.resize(new_size, Image.Resampling.NEAREST)
+        resized_image = cropped_image.resize((canvas_w, canvas_h), Image.Resampling.NEAREST)
+        
         self.tk_image = ImageTk.PhotoImage(resized_image)
-        
         self.canvas.delete("all")
-        self.canvas.create_image(canvas_width / 2, canvas_height / 2, anchor=tk.CENTER, image=self.tk_image)
+        self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image)
+
+    def canvas_to_image_coords(self, canvas_x, canvas_y):
+        if not hasattr(self, 'generator') or not self.generator or not self.generator.pil_image: return -1, -1
+        
+        img_w, img_h = self.generator.pil_image.size
+        
+        percent_x = canvas_x / self.canvas.winfo_width()
+        percent_y = canvas_y / self.canvas.winfo_height()
+
+        view_w = img_w / self.zoom
+        view_h = img_h / self.zoom
+        
+        img_x = self.view_offset[0] + (percent_x * view_w)
+        img_y = self.view_offset[1] + (percent_y * view_h)
+        
+        return int(img_x), int(img_y)
+
+    def _on_zoom(self, event):
+        if not self.generator or not self.generator.pil_image: return
+        factor = 1.1 if event.delta > 0 else 0.9
+        img_x, img_y = self.canvas_to_image_coords(event.x, event.y)
+        self.zoom *= factor
+        self.zoom = max(0.1, min(self.zoom, 10))
+        new_img_x, new_img_y = self.canvas_to_image_coords(event.x, event.y)
+        self.view_offset[0] += (img_x - new_img_x)
+        self.view_offset[1] += (img_y - new_img_y)
+        self.redraw_canvas()
+
+    def _on_pan_start(self, event):
+        self.pan_start_pos = (event.x, event.y)
+        self.canvas.config(cursor="fleur")
+
+    def _on_pan_end(self, event):
+        self.pan_start_pos = None
+        self.canvas.config(cursor="")
+
+    def _on_pan_move(self, event):
+        if self.pan_start_pos is None: return
+        dx = event.x - self.pan_start_pos[0]
+        dy = event.y - self.pan_start_pos[1]
+        self.view_offset[0] -= dx / self.zoom
+        self.view_offset[1] -= dy / self.zoom
+        self.pan_start_pos = (event.x, event.y)
+        self.redraw_canvas()
 
     def save_image(self):
         if not self.generator or not self.generator.pil_image: return
@@ -661,6 +713,7 @@ class App(tk.Tk):
                 with open(file_path, 'r') as f: loaded_params = json.load(f)
                 for key, var in self.params.items():
                     if key in loaded_params: var.set(loaded_params[key])
+                self.on_style_change() # Update style based on loaded preset
             except Exception as e: tk.messagebox.showerror("Load Error", f"Failed to load preset:\n{e}")
 
     def open_palette_editor(self):
@@ -669,16 +722,13 @@ class App(tk.Tk):
     def regenerate_ice(self):
         if not self.generator: return
         self.set_ui_state(is_generating=True)
-        
         thread = threading.Thread(target=self.run_ice_regeneration_in_thread, daemon=True)
         thread.start()
 
     def run_ice_regeneration_in_thread(self):
         self.update_generation_progress(0, "Finalizing map with new ice...")
-        
         self.generator.params['ice_seed'] = self.params['ice_seed'].get()
         self.generator.ice_noise = SimplexNoise(seed=self.generator.params['ice_seed'])
-        
         self.generator.finalize_map(
             self.params['water'].get(),
             self.params['ice'].get(),
@@ -698,13 +748,12 @@ class App(tk.Tk):
             self.params['map_style'].get()
         )
         self.generator.pil_image = self.generator.create_image()
-        self.on_canvas_resize(None)
+        self.redraw_canvas()
 
     def apply_predefined_palette(self, event=None):
         if not self.generator: return
         palette_name = self.palette_combobox.get()
         self.palette = list(PREDEFINED_PALETTES[palette_name])
-        # When a palette is selected, we must recolor the map
         self.recolor_map()
         
 if __name__ == "__main__":
