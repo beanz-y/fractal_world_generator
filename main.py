@@ -8,10 +8,7 @@ import threading
 from collections import deque
 import json
 import os
-# REMOVED: No longer need the external 'noise' library
 
-# ADDED: A self-contained, pure Python Simplex Noise implementation
-# This avoids the need for any external library installation.
 class SimplexNoise:
     """
     A pure Python implementation of simplex noise by Stefan Gustavson.
@@ -250,13 +247,14 @@ class FractalWorldGenerator:
         
         random.seed(self.seed)
         
-        # MODIFIED: Initialize the built-in noise generator
-        self.noise_generator = SimplexNoise(seed=self.seed)
+        ice_seed = self.params.get('ice_seed', self.seed)
+        self.noise_generator = SimplexNoise(seed=ice_seed)
 
         self.palette = palette
         self.INT_MIN_PLACEHOLDER = -2**31
         self.world_map = None
         self.color_map = None
+        self.pil_image = None # ADDED: store pil_image here
 
     def _add_fault(self):
         flag1 = random.randint(0, 1)
@@ -278,7 +276,12 @@ class FractalWorldGenerator:
     def _apply_erosion(self, erosion_passes):
         if erosion_passes <= 0: return
         heightmap = self.world_map.astype(np.float32)
-        for _ in range(erosion_passes):
+        # MODIFIED: Add progress updates for erosion
+        for i in range(erosion_passes):
+            if self.progress_callback:
+                # Erosion is weighted as 20% of the progress bar (from 50 to 70)
+                progress = 50 + int(20 * (i / erosion_passes))
+                self.progress_callback(progress, f"Eroding pass {i+1}/{erosion_passes}...")
             source_map = heightmap.copy()
             for y in range(self.y_range):
                 for x in range(self.x_range):
@@ -300,7 +303,6 @@ class FractalWorldGenerator:
         if percent_ice <= 0:
             return
 
-        # 1. Generate a simplex noise map
         noise_map = np.zeros((self.x_range, self.y_range))
         scale = self.x_range / 5.0
         octaves = 6
@@ -311,12 +313,10 @@ class FractalWorldGenerator:
             for x in range(self.x_range):
                 nx = x / scale
                 ny = y / scale
-                # MODIFIED: Call the built-in fractal_noise method
                 noise_map[x, y] = self.noise_generator.fractal_noise(nx, ny, octaves, persistence, lacunarity)
         
         noise_map = (noise_map - np.min(noise_map)) / (np.max(noise_map) - np.min(noise_map))
 
-        # 2. Calculate altitude and latitude factors
         min_alt, max_alt = np.min(self.world_map), np.max(self.world_map)
         if max_alt == min_alt: max_alt = min_alt + 1
         altitude_factor = (self.world_map - min_alt) / (max_alt - min_alt)
@@ -325,37 +325,50 @@ class FractalWorldGenerator:
         latitude_factor_1d = np.abs(y_coords - (self.y_range - 1) / 2.0) / (self.y_range / 2.0)
         latitude_factor = np.tile(latitude_factor_1d, (self.x_range, 1))
 
-        # 3. Combine factors to create a final "ice score"
         ice_score_map = (1.2 * latitude_factor) + (0.5 * altitude_factor) + (0.4 * noise_map)
         
-        # 4. Determine the threshold for ice
         valid_pixels_mask = self.color_map > 0
         if not np.any(valid_pixels_mask):
             return
 
         ice_threshold = np.percentile(ice_score_map[valid_pixels_mask], 100 - percent_ice)
 
-        # 5. Apply ice
         ice_color_index = 32
         ice_mask = (ice_score_map >= ice_threshold) & valid_pixels_mask
         self.color_map[ice_mask] = ice_color_index
     
+    # MODIFIED: Broke down generate() to provide better progress updates
     def generate(self):
+        # Stage 1: Faulting (0% -> 50%)
+        if self.progress_callback: self.progress_callback(0, "Generating faults...")
         self.world_map = np.full((self.x_range, self.y_range), self.INT_MIN_PLACEHOLDER, dtype=np.int32)
         self.y_range_div_2, self.y_range_div_pi = self.y_range / 2.0, self.y_range / np.pi
         self.sin_iter_phi = np.sin(np.arange(2 * self.x_range) * 2 * np.pi / self.x_range)
         
-        for i in range(self.params['faults']):
+        num_faults = self.params['faults']
+        for i in range(num_faults):
             self._add_fault()
-            if self.progress_callback: self.progress_callback(i + 1)
-
+            if self.progress_callback and i % 20 == 0:
+                self.progress_callback(int(50 * (i / num_faults)), "Generating faults...")
+        
+        if self.progress_callback: self.progress_callback(50, "Calculating heightmap...")
         temp_map = self.world_map.copy()
         temp_map[temp_map == self.INT_MIN_PLACEHOLDER] = 0
         self.world_map = np.cumsum(temp_map, axis=1)
         
+        # Stage 2: Erosion (50% -> 70%)
         self._apply_erosion(self.params.get('erosion', 0))
+        
+        # Stage 3: Finalizing (70% -> 95%)
+        if self.progress_callback: self.progress_callback(70, "Finalizing map...")
         self.finalize_map(self.params['water'], self.params.get('ice', 0))
-        return self.create_image()
+        
+        # Stage 4: Image Creation (95% -> 100%)
+        if self.progress_callback: self.progress_callback(95, "Creating image...")
+        self.pil_image = self.create_image()
+        
+        if self.progress_callback: self.progress_callback(100, "Done.")
+        return self.pil_image
 
     def finalize_map(self, percent_water, percent_ice):
         min_z, max_z = np.min(self.world_map), np.max(self.world_map)
@@ -413,15 +426,17 @@ class App(tk.Tk):
         self.image_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.canvas = tk.Canvas(self.image_frame, bg="gray")
         self.canvas.pack(fill=tk.BOTH, expand=True)
-        self.canvas.bind("<Configure>", lambda e: self.update_canvas())
+        # MODIFIED: update_canvas now happens on configure to handle resizing
+        self.canvas.bind("<Configure>", self.on_canvas_resize)
         
         self.palette = list(PREDEFINED_PALETTES["Default"])
         
         self.params = {
             'width': tk.IntVar(value=640), 'height': tk.IntVar(value=320),
             'seed': tk.IntVar(value=random.randint(0, 100000)),
+            'ice_seed': tk.IntVar(value=random.randint(0, 100000)),
             'faults': tk.IntVar(value=200), 'water': tk.DoubleVar(value=60.0),
-            'ice': tk.DoubleVar(value=15.0), # Default to 15% ice
+            'ice': tk.DoubleVar(value=15.0),
             'erosion': tk.IntVar(value=5)
         }
         self._create_control_widgets()
@@ -433,6 +448,8 @@ class App(tk.Tk):
         self._create_entry_widget("Width:", self.params['width'], row); row += 1
         self._create_entry_widget("Height:", self.params['height'], row); row += 1
         self._create_entry_widget("Seed:", self.params['seed'], row, include_random_button=True); row += 1
+        self._create_entry_widget("Ice Seed:", self.params['ice_seed'], row, include_random_button=True); row += 1
+        
         ttk.Separator(self.controls_frame, orient='horizontal').grid(row=row, columnspan=3, sticky='ew', pady=10); row += 1
         self._create_slider_widget("Faults:", self.params['faults'], 1, 1000, row); row += 2
         self._create_slider_widget("Water %:", self.params['water'], 0, 100, row); row += 2
@@ -448,31 +465,40 @@ class App(tk.Tk):
         ttk.Separator(self.controls_frame, orient='horizontal').grid(row=row, columnspan=3, sticky='ew', pady=10); row += 1
         
         self.progress = ttk.Progressbar(self.controls_frame, orient='horizontal', mode='determinate')
-        self.progress.grid(row=row, columnspan=3, sticky='ew', pady=5); row += 1
+        self.progress.grid(row=row, columnspan=3, sticky='ew', pady=(5,0)); row += 1
+        # ADDED: Status label for progress description
+        self.status_label = ttk.Label(self.controls_frame, text="Ready")
+        self.status_label.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=(0,5)); row += 1
 
         action_frame = ttk.Frame(self.controls_frame)
         action_frame.grid(row=row, columnspan=3, pady=5); row += 1
         self.generate_button = ttk.Button(action_frame, text="Generate", command=self.start_generation)
         self.generate_button.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-        self.recolor_button = ttk.Button(action_frame, text="Recolor Map", command=self.recolor_map, state=tk.DISABLED)
+        self.ice_button = ttk.Button(action_frame, text="Regenerate Ice", command=self.regenerate_ice, state=tk.DISABLED)
+        self.ice_button.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        
+        recolor_frame = ttk.Frame(self.controls_frame)
+        recolor_frame.grid(row=row, columnspan=3, pady=5); row += 1
+        self.recolor_button = ttk.Button(recolor_frame, text="Recolor Map", command=self.recolor_map, state=tk.DISABLED)
         self.recolor_button.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-        
-        file_frame = ttk.Frame(self.controls_frame); file_frame.grid(row=row, columnspan=3, pady=5); row += 1
-        self.palette_button = ttk.Button(file_frame, text="Edit Palette", command=self.open_palette_editor)
+        self.palette_button = ttk.Button(recolor_frame, text="Edit Palette", command=self.open_palette_editor)
         self.palette_button.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-        self.save_button = ttk.Button(file_frame, text="Save Image As...", command=self.save_image, state=tk.DISABLED)
-        self.save_button.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+
+        file_frame = ttk.Frame(self.controls_frame); file_frame.grid(row=row, columnspan=3, pady=5); row += 1
+        ttk.Button(file_frame, text="Load Preset", command=self.load_preset).pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        ttk.Button(file_frame, text="Save Preset", command=self.save_preset).pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
         
-        preset_frame = ttk.Frame(self.controls_frame); preset_frame.grid(row=row, columnspan=3, pady=5); row += 1
-        ttk.Button(preset_frame, text="Load Preset", command=self.load_preset).pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-        ttk.Button(preset_frame, text="Save Preset", command=self.save_preset).pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        save_frame = ttk.Frame(self.controls_frame); save_frame.grid(row=row, columnspan=3, pady=5); row += 1
+        self.save_button = ttk.Button(save_frame, text="Save Image As...", command=self.save_image, state=tk.DISABLED)
+        self.save_button.pack(fill=tk.X, expand=True, padx=5)
 
     def _create_entry_widget(self, label_text, var, row, include_random_button=False):
         ttk.Label(self.controls_frame, text=label_text).grid(row=row, column=0, sticky='w', padx=5, pady=2)
         entry = ttk.Entry(self.controls_frame, textvariable=var, width=10)
         entry.grid(row=row, column=1, sticky='ew', padx=5)
         if include_random_button:
-            ttk.Button(self.controls_frame, text="🎲", width=3, command=lambda: var.set(random.randint(0, 100000))).grid(row=row, column=2, sticky='w')
+            button = ttk.Button(self.controls_frame, text="🎲", width=3, command=lambda v=var: v.set(random.randint(0, 100000)))
+            button.grid(row=row, column=2, sticky='w')
         
     def _create_slider_widget(self, label_text, var, from_, to, row):
         ttk.Label(self.controls_frame, text=label_text).grid(row=row, column=0, columnspan=3, sticky='w', padx=5)
@@ -483,50 +509,64 @@ class App(tk.Tk):
 
     def set_ui_state(self, is_generating):
         state = tk.DISABLED if is_generating else tk.NORMAL
+        for widget in [self.generate_button, self.ice_button, self.recolor_button, self.palette_button, self.save_button, self.palette_combobox]:
+            # The generate button is handled separately
+            if widget != self.generate_button:
+                widget.config(state=tk.NORMAL if not is_generating and self.generator else tk.DISABLED)
         self.generate_button.config(state=state)
-        self.palette_button.config(state=state)
-        self.palette_combobox.config(state=state)
-
-        has_image = not is_generating and self.pil_image
-        self.save_button.config(state=tk.NORMAL if has_image else tk.DISABLED)
-        self.recolor_button.config(state=tk.NORMAL if has_image else tk.DISABLED)
 
     def start_generation(self):
         self.set_ui_state(is_generating=True)
         params_dict = {key: var.get() for key, var in self.params.items()}
-        self.progress.config(maximum=params_dict['faults'])
-        self.progress['value'] = 0
         thread = threading.Thread(target=self.run_generation_in_thread, args=(params_dict,), daemon=True)
         thread.start()
         
     def run_generation_in_thread(self, params_dict):
-        self.generator = FractalWorldGenerator(params_dict, self.palette, self.update_progress)
+        # The main generation logic now runs entirely in this thread
+        self.generator = FractalWorldGenerator(params_dict, self.palette, self.update_generation_progress)
         self.pil_image = self.generator.generate()
-        self.after(0, self.update_canvas)
+        # Schedule the UI update on the main thread when done
+        self.after(0, self.finalize_generation)
 
-    def update_progress(self, value):
-        self.after(0, self.progress.config, {'value': value})
-
-    def update_canvas(self):
-        if self.pil_image:
-            canvas_width, canvas_height = self.canvas.winfo_width(), self.canvas.winfo_height()
-            if canvas_width <= 1 or canvas_height <= 1:
-                self.after(100, self.update_canvas); return
-            img_w, img_h = self.pil_image.size
-            scale = min(canvas_width / img_w, canvas_height / img_h)
-            new_size = (int(img_w * scale), int(img_h * scale))
-            resized_image = self.pil_image.resize(new_size, Image.Resampling.NEAREST)
-            self.tk_image = ImageTk.PhotoImage(resized_image)
-            self.canvas.delete("all")
-            self.canvas.create_image(canvas_width / 2, canvas_height / 2, anchor=tk.CENTER, image=self.tk_image)
-        
+    # MODIFIED: New function to handle final UI state on the main thread
+    def finalize_generation(self):
+        self.on_canvas_resize(None) # Redraw canvas with new image
         self.set_ui_state(is_generating=False)
+        self.status_label.config(text="Ready")
+
+    # ADDED: New progress callback that updates the progress bar AND status label
+    def update_generation_progress(self, value, text):
+        # Schedule UI updates from the worker thread
+        self.after(0, lambda: (
+            self.progress.config(value=value),
+            self.status_label.config(text=text)
+        ))
+
+    # MODIFIED: Renamed from update_canvas. Now only handles drawing.
+    def on_canvas_resize(self, event):
+        if not self.generator or not self.generator.pil_image: return
+
+        pil_image = self.generator.pil_image
+        canvas_width = self.canvas.winfo_width()
+        canvas_height = self.canvas.winfo_height()
+
+        if canvas_width <= 1 or canvas_height <= 1: return
+        
+        img_w, img_h = pil_image.size
+        scale = min(canvas_width / img_w, canvas_height / img_h)
+        new_size = (int(img_w * scale), int(img_h * scale))
+        
+        resized_image = pil_image.resize(new_size, Image.Resampling.NEAREST)
+        self.tk_image = ImageTk.PhotoImage(resized_image)
+        
+        self.canvas.delete("all")
+        self.canvas.create_image(canvas_width / 2, canvas_height / 2, anchor=tk.CENTER, image=self.tk_image)
 
     def save_image(self):
-        if not self.pil_image: return
+        if not self.generator or not self.generator.pil_image: return
         file_path = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG Image", "*.png"), ("JPEG Image", "*.jpg"), ("All Files", "*.*")])
         if file_path:
-            try: self.pil_image.save(file_path)
+            try: self.generator.pil_image.save(file_path)
             except Exception as e: tk.messagebox.showerror("Save Error", f"Failed to save image:\n{e}")
 
     def save_preset(self):
@@ -549,13 +589,32 @@ class App(tk.Tk):
     def open_palette_editor(self):
         PaletteEditor(self).grab_set()
 
+    def regenerate_ice(self):
+        if not self.generator: return
+        self.set_ui_state(is_generating=True)
+        
+        new_ice_seed = self.params['ice_seed'].get()
+        self.generator.params['ice_seed'] = new_ice_seed
+        self.generator.noise_generator = SimplexNoise(seed=new_ice_seed)
+        
+        # Redo the finalization and image creation on a background thread
+        thread = threading.Thread(target=self.run_ice_regeneration_in_thread, daemon=True)
+        thread.start()
+
+    def run_ice_regeneration_in_thread(self):
+        # A lightweight regeneration just for the ice
+        self.update_generation_progress(0, "Finalizing map with new ice...")
+        self.generator.finalize_map(self.params['water'].get(), self.params['ice'].get())
+        self.update_generation_progress(50, "Creating image...")
+        self.generator.pil_image = self.generator.create_image()
+        self.update_generation_progress(100, "Done.")
+        self.after(0, self.finalize_generation)
+
     def recolor_map(self):
         if not self.generator or self.generator.color_map is None: return
         self.generator.palette = self.palette
-        # MODIFIED: When recoloring, we need to re-finalize the map to re-apply ice logic
-        self.generator.finalize_map(self.generator.params['water'], self.generator.params.get('ice', 0))
-        self.pil_image = self.generator.create_image()
-        self.update_canvas()
+        self.generator.pil_image = self.generator.create_image()
+        self.on_canvas_resize(None)
 
     def apply_predefined_palette(self, event=None):
         self.palette = list(PREDEFINED_PALETTES[self.palette_combobox.get()])
