@@ -546,9 +546,7 @@ class App(tk.Tk):
         ttk.Radiobutton(proj_frame, text="Globe", variable=self.params['projection'], value="Orthographic", command=self.on_projection_change).pack(side=tk.LEFT)
 
         self.rotation_frame = ttk.Labelframe(self.controls_frame, text="Globe Rotation")
-        # MODIFIED: Corrected layout by placing this frame in the correct row
         self.rotation_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
-
         self._create_slider_widget("Yaw:", self.params['rotation_y'], -180, 180, 0, master=self.rotation_frame)
         self._create_slider_widget("Pitch:", self.params['rotation_x'], -90, 90, 2, master=self.rotation_frame)
         
@@ -722,7 +720,7 @@ class App(tk.Tk):
             ndc_y = (canvas_coords_y - canvas_h / 2) / radius
             
             z2 = 1 - ndc_x**2 - ndc_y**2
-            visible_mask = z2 >= 0 # Use >= to avoid artifacts at the very edge
+            visible_mask = z2 >= 0
             z = np.sqrt(z2[visible_mask])
             
             x_ndc = ndc_x[visible_mask]
@@ -734,7 +732,7 @@ class App(tk.Tk):
             x_r2 = x_ndc * cy - z_r1 * sy
             z_r2 = x_ndc * sy + z_r1 * cy
 
-            lat = np.arcsin(-y_r1) # Inverted Y for correct pole orientation
+            lat = np.arcsin(-y_r1)
             lon = np.arctan2(x_r2, z_r2)
             
             src_x = ((lon / math.pi) * 0.5 + 0.5) * self.generator.x_range
@@ -825,7 +823,6 @@ class App(tk.Tk):
         dy = event.y - self.pan_start_pos[1]
         
         if self.params['projection'].get() == 'Orthographic':
-            # MODIFIED: Flipped signs for natural drag-to-rotate
             self.params['rotation_y'].set(self.params['rotation_y'].get() + dx * 0.5)
             self.params['rotation_x'].set(max(-90, min(90, self.params['rotation_x'].get() + dy * 0.5)))
         else:
@@ -886,14 +883,23 @@ class App(tk.Tk):
 
     def recolor_map(self):
         if not self.generator or self.generator.color_map is None: return
+        # MODIFIED: Relaunch in a thread to prevent UI freeze
+        self.set_ui_state(is_generating=True)
+        thread = threading.Thread(target=self.run_recolor_in_thread, daemon=True)
+        thread.start()
+        
+    def run_recolor_in_thread(self):
+        self.update_generation_progress(0, "Updating styles...")
         self.generator.palette = self.palette
         self.generator.finalize_map(
             self.params['water'].get(),
             self.params['ice'].get(),
             self.params['map_style'].get()
         )
+        self.update_generation_progress(50, "Creating image...")
         self.generator.pil_image = self.generator.create_image()
-        self.redraw_canvas()
+        self.update_generation_progress(100, "Done.")
+        self.after(0, self.finalize_generation)
 
     def apply_predefined_palette(self, event=None):
         if not self.generator: return
