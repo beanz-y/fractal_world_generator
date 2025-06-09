@@ -13,6 +13,7 @@ class SimplexNoise:
     """
     A pure Python implementation of simplex noise by Stefan Gustavson.
     Adapted from various sources to be a self-contained class.
+    MODIFIED: Now includes 3D noise generation for seamless tiling.
     """
     def __init__(self, seed=None):
         if seed is None:
@@ -22,76 +23,106 @@ class SimplexNoise:
         random.Random(seed).shuffle(p)
         self.perm = p * 2
 
+        # 2D constants
         self.F2 = 0.5 * (math.sqrt(3.0) - 1.0)
         self.G2 = (3.0 - math.sqrt(3.0)) / 6.0
+        
+        # 3D constants
+        self.F3 = 1.0 / 3.0
+        self.G3 = 1.0 / 6.0
+
         self.grad3 = [
             (1, 1, 0), (-1, 1, 0), (1, -1, 0), (-1, -1, 0),
             (1, 0, 1), (-1, 0, 1), (1, 0, -1), (-1, 0, -1),
             (0, 1, 1), (0, -1, 1), (0, 1, -1), (0, -1, -1)
         ]
+        
+        self.grad4 = [
+            (0, 1, 1, 1), (0, 1, 1, -1), (0, 1, -1, 1), (0, 1, -1, -1),
+            (0, -1, 1, 1), (0, -1, 1, -1), (0, -1, -1, 1), (0, -1, -1, -1),
+            (1, 0, 1, 1), (1, 0, 1, -1), (1, 0, -1, 1), (1, 0, -1, -1),
+            (-1, 0, 1, 1), (-1, 0, 1, -1), (-1, 0, -1, 1), (-1, 0, -1, -1),
+            (1, 1, 0, 1), (1, 1, 0, -1), (1, -1, 0, 1), (1, -1, 0, -1),
+            (-1, 1, 0, 1), (-1, 1, 0, -1), (-1, -1, 0, 1), (-1, -1, 0, -1),
+            (1, 1, 1, 0), (1, 1, -1, 0), (1, -1, 1, 0), (1, -1, -1, 0),
+            (-1, 1, 1, 0), (-1, 1, -1, 0), (-1, -1, 1, 0), (-1, -1, -1, 0)
+        ]
 
     def _dot(self, grad, x, y):
         return grad[0] * x + grad[1] * y
+    
+    def _dot3(self, grad, x, y, z):
+        return grad[0] * x + grad[1] * y + grad[2] * z
 
     def noise2(self, x, y):
         s = (x + y) * self.F2
         i = math.floor(x + s)
         j = math.floor(y + s)
         t = (i + j) * self.G2
-        X0 = i - t
-        Y0 = j - t
-        x0 = x - X0
-        y0 = y - Y0
+        X0, Y0 = i - t, j - t
+        x0, y0 = x - X0, y - Y0
 
-        if x0 > y0:
-            i1, j1 = 1, 0
-        else:
-            i1, j1 = 0, 1
+        i1, j1 = (1, 0) if x0 > y0 else (0, 1)
 
-        x1 = x0 - i1 + self.G2
-        y1 = y0 - j1 + self.G2
-        x2 = x0 - 1.0 + 2.0 * self.G2
-        y2 = y0 - 1.0 + 2.0 * self.G2
+        x1, y1 = x0 - i1 + self.G2, y0 - j1 + self.G2
+        x2, y2 = x0 - 1.0 + 2.0 * self.G2, y0 - 1.0 + 2.0 * self.G2
 
-        ii = i & 255
-        jj = j & 255
-
+        ii, jj = i & 255, j & 255
         gi0 = self.perm[ii + self.perm[jj]] % 12
         gi1 = self.perm[ii + i1 + self.perm[jj + j1]] % 12
         gi2 = self.perm[ii + 1 + self.perm[jj + 1]] % 12
         
-        g0 = self.grad3[gi0]
-        g1 = self.grad3[gi1]
-        g2 = self.grad3[gi2]
-
         t0 = 0.5 - x0 * x0 - y0 * y0
-        if t0 < 0:
-            n0 = 0.0
-        else:
-            t0 *= t0
-            n0 = t0 * t0 * self._dot(g0, x0, y0)
-
+        n0 = t0 * t0 * t0 * t0 * self._dot(self.grad3[gi0], x0, y0) if t0 > 0 else 0.0
+        
         t1 = 0.5 - x1 * x1 - y1 * y1
-        if t1 < 0:
-            n1 = 0.0
-        else:
-            t1 *= t1
-            n1 = t1 * t1 * self._dot(g1, x1, y1)
-
+        n1 = t1 * t1 * t1 * t1 * self._dot(self.grad3[gi1], x1, y1) if t1 > 0 else 0.0
+        
         t2 = 0.5 - x2 * x2 - y2 * y2
-        if t2 < 0:
-            n2 = 0.0
-        else:
-            t2 *= t2
-            n2 = t2 * t2 * self._dot(g2, x2, y2)
+        n2 = t2 * t2 * t2 * t2 * self._dot(self.grad3[gi2], x2, y2) if t2 > 0 else 0.0
             
         return 70.0 * (n0 + n1 + n2)
 
+    # ADDED: 3D noise function
+    def noise3(self, x, y, z):
+        s = (x + y + z) * self.F3
+        i, j, k = math.floor(x + s), math.floor(y + s), math.floor(z + s)
+        t = (i + j + k) * self.G3
+        X0, Y0, Z0 = i - t, j - t, k - t
+        x0, y0, z0 = x - X0, y - Y0, z - Z0
+
+        if x0 >= y0:
+            if y0 >= z0: i1, j1, k1 = 1, 0, 0; i2, j2, k2 = 1, 1, 0
+            elif x0 >= z0: i1, j1, k1 = 1, 0, 0; i2, j2, k2 = 1, 0, 1
+            else: i1, j1, k1 = 0, 0, 1; i2, j2, k2 = 1, 0, 1
+        else:
+            if y0 < z0: i1, j1, k1 = 0, 0, 1; i2, j2, k2 = 0, 1, 1
+            elif x0 < z0: i1, j1, k1 = 0, 1, 0; i2, j2, k2 = 0, 1, 1
+            else: i1, j1, k1 = 0, 1, 0; i2, j2, k2 = 1, 1, 0
+
+        x1, y1, z1 = x0 - i1 + self.G3, y0 - j1 + self.G3, z0 - k1 + self.G3
+        x2, y2, z2 = x0 - i2 + 2.0 * self.G3, y0 - j2 + 2.0 * self.G3, z0 - k2 + 2.0 * self.G3
+        x3, y3, z3 = x0 - 1.0 + 3.0 * self.G3, y0 - 1.0 + 3.0 * self.G3, z0 - 1.0 + 3.0 * self.G3
+
+        ii, jj, kk = i & 255, j & 255, k & 255
+        gi0 = self.perm[ii + self.perm[jj + self.perm[kk]]] % 12
+        gi1 = self.perm[ii + i1 + self.perm[jj + j1 + self.perm[kk + k1]]] % 12
+        gi2 = self.perm[ii + i2 + self.perm[jj + j2 + self.perm[kk + k2]]] % 12
+        gi3 = self.perm[ii + 1 + self.perm[jj + 1 + self.perm[kk + 1]]] % 12
+
+        t0 = 0.6 - x0 * x0 - y0 * y0 - z0 * z0
+        n0 = t0 * t0 * t0 * t0 * self._dot3(self.grad3[gi0], x0, y0, z0) if t0 > 0 else 0.0
+        t1 = 0.6 - x1 * x1 - y1 * y1 - z1 * z1
+        n1 = t1 * t1 * t1 * t1 * self._dot3(self.grad3[gi1], x1, y1, z1) if t1 > 0 else 0.0
+        t2 = 0.6 - x2 * x2 - y2 * y2 - z2 * z2
+        n2 = t2 * t2 * t2 * t2 * self._dot3(self.grad3[gi2], x2, y2, z2) if t2 > 0 else 0.0
+        t3 = 0.6 - x3 * x3 - y3 * y3 - z3 * z3
+        n3 = t3 * t3 * t3 * t3 * self._dot3(self.grad3[gi3], x3, y3, z3) if t3 > 0 else 0.0
+
+        return 32.0 * (n0 + n1 + n2 + n3)
+
     def fractal_noise(self, x, y, octaves, persistence, lacunarity):
-        total = 0.0
-        frequency = 1.0
-        amplitude = 1.0
-        max_value = 0.0
+        total, frequency, amplitude, max_value = 0.0, 1.0, 1.0, 0.0
         for _ in range(octaves):
             total += self.noise2(x * frequency, y * frequency) * amplitude
             max_value += amplitude
@@ -99,6 +130,15 @@ class SimplexNoise:
             frequency *= lacunarity
         return total / max_value
 
+    # ADDED: Fractal noise for 3D coordinates
+    def fractal_noise3(self, x, y, z, octaves, persistence, lacunarity):
+        total, frequency, amplitude, max_value = 0.0, 1.0, 1.0, 0.0
+        for _ in range(octaves):
+            total += self.noise3(x * frequency, y * frequency, z * frequency) * amplitude
+            max_value += amplitude
+            amplitude *= persistence
+            frequency *= lacunarity
+        return total / max_value
 
 PREDEFINED_PALETTES = {
     "Biome": [
@@ -284,11 +324,16 @@ class FractalWorldGenerator:
         
         altitude = (self.world_map - land_min) / (land_max - land_min)
         
+        # MODIFIED: Use tileable 3D noise for moisture map
         moisture = np.zeros_like(self.world_map, dtype=np.float32)
-        scale = self.x_range / 6.0
+        scale = 3.0
         for y in range(self.y_range):
             for x in range(self.x_range):
-                moisture[x,y] = self.moisture_noise.fractal_noise(x/scale, y/scale, 5, 0.5, 2.0)
+                angle = 2 * math.pi * (x / self.x_range)
+                nx = (1 / (2*math.pi)) * scale * math.cos(angle)
+                nz = (1 / (2*math.pi)) * scale * math.sin(angle)
+                ny = y / (self.y_range/2) * scale
+                moisture[x,y] = self.moisture_noise.fractal_noise3(nx, ny, nz, 5, 0.5, 2.0)
         moisture = (moisture - np.min(moisture)) / (np.max(moisture) - np.min(moisture))
         
         biome_names = ['rock', 'tundra', 'desert', 'plains', 'forest']
@@ -310,12 +355,16 @@ class FractalWorldGenerator:
     def _apply_ice_caps(self, percent_ice):
         if percent_ice <= 0: return
 
+        # MODIFIED: Use tileable 3D noise for ice caps
         noise_map = np.zeros((self.x_range, self.y_range))
-        scale = self.x_range / 5.0
+        scale = 4.0
         for y in range(self.y_range):
             for x in range(self.x_range):
-                nx, ny = x / scale, y / scale
-                noise_map[x, y] = self.ice_noise.fractal_noise(nx, ny, 6, 0.5, 2.0)
+                angle = 2 * math.pi * (x / self.x_range)
+                nx = (1 / (2*math.pi)) * scale * math.cos(angle)
+                nz = (1 / (2*math.pi)) * scale * math.sin(angle)
+                ny = y / (self.y_range/2) * scale
+                noise_map[x, y] = self.ice_noise.fractal_noise3(nx, ny, nz, 6, 0.5, 2.0)
         noise_map = (noise_map - np.min(noise_map)) / (np.max(noise_map) - np.min(noise_map))
 
         min_alt, max_alt = np.min(self.world_map), np.max(self.world_map)
@@ -631,12 +680,10 @@ class App(tk.Tk):
         view_w = img_w / self.zoom
         view_h = img_h / self.zoom
         
-        # MODIFIED: Use modulo to wrap the horizontal view
         x0 = self.view_offset[0]
         y0 = max(0, min(self.view_offset[1], img_h - view_h))
-        self.view_offset[1] = y0 # Clamp vertical offset
+        self.view_offset[1] = y0
 
-        # Stitch two images together if wrapping horizontally
         x0_wrapped = x0 % img_w
         
         box1_x_end = min(img_w, x0_wrapped + view_w)
@@ -662,8 +709,10 @@ class App(tk.Tk):
         if not hasattr(self, 'generator') or not self.generator or not self.generator.pil_image: return -1, -1
         
         img_w, img_h = self.generator.pil_image.size
+        
         percent_x = canvas_x / self.canvas.winfo_width()
         percent_y = canvas_y / self.canvas.winfo_height()
+
         view_w = img_w / self.zoom
         view_h = img_h / self.zoom
         
