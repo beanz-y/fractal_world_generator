@@ -398,7 +398,6 @@ class FractalWorldGenerator:
         self.color_map = np.zeros_like(self.world_map, dtype=np.uint8)
         
         water_mask = self.world_map < water_level_threshold
-        # MODIFIED: Corrected the typo here
         land_mask = ~water_mask
         
         water_min, water_max = min_z, water_level_threshold
@@ -553,8 +552,7 @@ class App(tk.Tk):
         self.apply_predefined_palette(None)
 
     def _on_map_hover(self, event):
-        # MODIFIED: Changed check to handle numpy array correctly
-        if not hasattr(self, 'generator') or self.generator is None or self.generator.color_map is None:
+        if self.generator is None or self.generator.color_map is None:
             self.tooltip.hide()
             return
             
@@ -632,16 +630,29 @@ class App(tk.Tk):
         img_w, img_h = pil_image.size
         view_w = img_w / self.zoom
         view_h = img_h / self.zoom
-        x0 = self.view_offset[0]
-        y0 = self.view_offset[1]
-
-        x0 = max(0, min(x0, img_w - view_w))
-        y0 = max(0, min(y0, img_h - view_h))
-        self.view_offset = [x0, y0]
-
-        cropped_image = pil_image.crop((x0, y0, x0 + view_w, y0 + view_h))
         
-        resized_image = cropped_image.resize((canvas_w, canvas_h), Image.Resampling.NEAREST)
+        # MODIFIED: Use modulo to wrap the horizontal view
+        x0 = self.view_offset[0]
+        y0 = max(0, min(self.view_offset[1], img_h - view_h))
+        self.view_offset[1] = y0 # Clamp vertical offset
+
+        # Stitch two images together if wrapping horizontally
+        x0_wrapped = x0 % img_w
+        
+        box1_x_end = min(img_w, x0_wrapped + view_w)
+        box1 = (x0_wrapped, y0, box1_x_end, y0 + view_h)
+        crop1 = pil_image.crop(box1)
+        
+        stitched_image = Image.new('RGB', (int(view_w), int(view_h)))
+        stitched_image.paste(crop1, (0, 0))
+        
+        if x0_wrapped + view_w > img_w:
+            remaining_w = (x0_wrapped + view_w) - img_w
+            box2 = (0, y0, remaining_w, y0 + view_h)
+            crop2 = pil_image.crop(box2)
+            stitched_image.paste(crop2, (crop1.width, 0))
+            
+        resized_image = stitched_image.resize((canvas_w, canvas_h), Image.Resampling.NEAREST)
         
         self.tk_image = ImageTk.PhotoImage(resized_image)
         self.canvas.delete("all")
@@ -651,10 +662,8 @@ class App(tk.Tk):
         if not hasattr(self, 'generator') or not self.generator or not self.generator.pil_image: return -1, -1
         
         img_w, img_h = self.generator.pil_image.size
-        
         percent_x = canvas_x / self.canvas.winfo_width()
         percent_y = canvas_y / self.canvas.winfo_height()
-
         view_w = img_w / self.zoom
         view_h = img_h / self.zoom
         
@@ -713,7 +722,7 @@ class App(tk.Tk):
                 with open(file_path, 'r') as f: loaded_params = json.load(f)
                 for key, var in self.params.items():
                     if key in loaded_params: var.set(loaded_params[key])
-                self.on_style_change() # Update style based on loaded preset
+                self.on_style_change()
             except Exception as e: tk.messagebox.showerror("Load Error", f"Failed to load preset:\n{e}")
 
     def open_palette_editor(self):
