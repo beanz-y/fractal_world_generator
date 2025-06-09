@@ -8,6 +8,100 @@ import threading
 from collections import deque
 import json
 import os
+# REMOVED: No longer need the external 'noise' library
+
+# ADDED: A self-contained, pure Python Simplex Noise implementation
+# This avoids the need for any external library installation.
+class SimplexNoise:
+    """
+    A pure Python implementation of simplex noise by Stefan Gustavson.
+    Adapted from various sources to be a self-contained class.
+    """
+    def __init__(self, seed=None):
+        if seed is None:
+            seed = random.randint(0, 2**32 - 1)
+        
+        p = list(range(256))
+        random.Random(seed).shuffle(p)
+        self.perm = p * 2
+
+        self.F2 = 0.5 * (math.sqrt(3.0) - 1.0)
+        self.G2 = (3.0 - math.sqrt(3.0)) / 6.0
+        self.grad3 = [
+            (1, 1, 0), (-1, 1, 0), (1, -1, 0), (-1, -1, 0),
+            (1, 0, 1), (-1, 0, 1), (1, 0, -1), (-1, 0, -1),
+            (0, 1, 1), (0, -1, 1), (0, 1, -1), (0, -1, -1)
+        ]
+
+    def _dot(self, grad, x, y):
+        return grad[0] * x + grad[1] * y
+
+    def noise2(self, x, y):
+        s = (x + y) * self.F2
+        i = math.floor(x + s)
+        j = math.floor(y + s)
+        t = (i + j) * self.G2
+        X0 = i - t
+        Y0 = j - t
+        x0 = x - X0
+        y0 = y - Y0
+
+        if x0 > y0:
+            i1, j1 = 1, 0
+        else:
+            i1, j1 = 0, 1
+
+        x1 = x0 - i1 + self.G2
+        y1 = y0 - j1 + self.G2
+        x2 = x0 - 1.0 + 2.0 * self.G2
+        y2 = y0 - 1.0 + 2.0 * self.G2
+
+        ii = i & 255
+        jj = j & 255
+
+        gi0 = self.perm[ii + self.perm[jj]] % 12
+        gi1 = self.perm[ii + i1 + self.perm[jj + j1]] % 12
+        gi2 = self.perm[ii + 1 + self.perm[jj + 1]] % 12
+        
+        g0 = self.grad3[gi0]
+        g1 = self.grad3[gi1]
+        g2 = self.grad3[gi2]
+
+        t0 = 0.5 - x0 * x0 - y0 * y0
+        if t0 < 0:
+            n0 = 0.0
+        else:
+            t0 *= t0
+            n0 = t0 * t0 * self._dot(g0, x0, y0)
+
+        t1 = 0.5 - x1 * x1 - y1 * y1
+        if t1 < 0:
+            n1 = 0.0
+        else:
+            t1 *= t1
+            n1 = t1 * t1 * self._dot(g1, x1, y1)
+
+        t2 = 0.5 - x2 * x2 - y2 * y2
+        if t2 < 0:
+            n2 = 0.0
+        else:
+            t2 *= t2
+            n2 = t2 * t2 * self._dot(g2, x2, y2)
+            
+        return 70.0 * (n0 + n1 + n2)
+
+    def fractal_noise(self, x, y, octaves, persistence, lacunarity):
+        total = 0.0
+        frequency = 1.0
+        amplitude = 1.0
+        max_value = 0.0
+        for _ in range(octaves):
+            total += self.noise2(x * frequency, y * frequency) * amplitude
+            max_value += amplitude
+            amplitude *= persistence
+            frequency *= lacunarity
+        return total / max_value
+
 
 PREDEFINED_PALETTES = {
     "Default": [
@@ -156,6 +250,9 @@ class FractalWorldGenerator:
         
         random.seed(self.seed)
         
+        # MODIFIED: Initialize the built-in noise generator
+        self.noise_generator = SimplexNoise(seed=self.seed)
+
         self.palette = palette
         self.INT_MIN_PLACEHOLDER = -2**31
         self.world_map = None
@@ -198,6 +295,50 @@ class FractalWorldGenerator:
                         heightmap[x, y] -= sediment_amount
                         heightmap[lowest_nx, lowest_ny] += sediment_amount
         self.world_map = heightmap.astype(np.int32)
+
+    def _apply_ice_caps(self, percent_ice):
+        if percent_ice <= 0:
+            return
+
+        # 1. Generate a simplex noise map
+        noise_map = np.zeros((self.x_range, self.y_range))
+        scale = self.x_range / 5.0
+        octaves = 6
+        persistence = 0.5
+        lacunarity = 2.0
+
+        for y in range(self.y_range):
+            for x in range(self.x_range):
+                nx = x / scale
+                ny = y / scale
+                # MODIFIED: Call the built-in fractal_noise method
+                noise_map[x, y] = self.noise_generator.fractal_noise(nx, ny, octaves, persistence, lacunarity)
+        
+        noise_map = (noise_map - np.min(noise_map)) / (np.max(noise_map) - np.min(noise_map))
+
+        # 2. Calculate altitude and latitude factors
+        min_alt, max_alt = np.min(self.world_map), np.max(self.world_map)
+        if max_alt == min_alt: max_alt = min_alt + 1
+        altitude_factor = (self.world_map - min_alt) / (max_alt - min_alt)
+
+        y_coords = np.arange(self.y_range)
+        latitude_factor_1d = np.abs(y_coords - (self.y_range - 1) / 2.0) / (self.y_range / 2.0)
+        latitude_factor = np.tile(latitude_factor_1d, (self.x_range, 1))
+
+        # 3. Combine factors to create a final "ice score"
+        ice_score_map = (1.2 * latitude_factor) + (0.5 * altitude_factor) + (0.4 * noise_map)
+        
+        # 4. Determine the threshold for ice
+        valid_pixels_mask = self.color_map > 0
+        if not np.any(valid_pixels_mask):
+            return
+
+        ice_threshold = np.percentile(ice_score_map[valid_pixels_mask], 100 - percent_ice)
+
+        # 5. Apply ice
+        ice_color_index = 32
+        ice_mask = (ice_score_map >= ice_threshold) & valid_pixels_mask
+        self.color_map[ice_mask] = ice_color_index
     
     def generate(self):
         self.world_map = np.full((self.x_range, self.y_range), self.INT_MIN_PLACEHOLDER, dtype=np.int32)
@@ -213,10 +354,10 @@ class FractalWorldGenerator:
         self.world_map = np.cumsum(temp_map, axis=1)
         
         self._apply_erosion(self.params.get('erosion', 0))
-        self.finalize_map(self.params['water'])
+        self.finalize_map(self.params['water'], self.params.get('ice', 0))
         return self.create_image()
 
-    def finalize_map(self, percent_water):
+    def finalize_map(self, percent_water, percent_ice):
         min_z, max_z = np.min(self.world_map), np.max(self.world_map)
         if max_z == min_z: max_z = min_z + 1
 
@@ -242,15 +383,18 @@ class FractalWorldGenerator:
         land_min, land_max = water_level_threshold, max_z
         if land_max == land_min: land_max = land_min + 1
         self.color_map[land_mask] = 16 + np.floor(15.99 * (self.world_map[land_mask] - land_min) / (land_max - land_min))
-        self.color_map = np.clip(self.color_map, 1, 31)
+        
+        self._apply_ice_caps(percent_ice)
 
     def create_image(self):
         if self.color_map is None: return None
+        
+        clipped_color_map = np.clip(self.color_map, 0, len(self.palette) - 1)
+        
         rgb_map = np.zeros((self.y_range, self.x_range, 3), dtype=np.uint8)
         for i, color in enumerate(self.palette):
-            if i < len(self.palette):
-                mask = self.color_map.T == i
-                rgb_map[mask] = color
+            mask = clipped_color_map.T == i
+            rgb_map[mask] = color
         return Image.fromarray(rgb_map, 'RGB')
 
 class App(tk.Tk):
@@ -272,10 +416,12 @@ class App(tk.Tk):
         self.canvas.bind("<Configure>", lambda e: self.update_canvas())
         
         self.palette = list(PREDEFINED_PALETTES["Default"])
+        
         self.params = {
             'width': tk.IntVar(value=640), 'height': tk.IntVar(value=320),
             'seed': tk.IntVar(value=random.randint(0, 100000)),
             'faults': tk.IntVar(value=200), 'water': tk.DoubleVar(value=60.0),
+            'ice': tk.DoubleVar(value=15.0), # Default to 15% ice
             'erosion': tk.IntVar(value=5)
         }
         self._create_control_widgets()
@@ -290,6 +436,7 @@ class App(tk.Tk):
         ttk.Separator(self.controls_frame, orient='horizontal').grid(row=row, columnspan=3, sticky='ew', pady=10); row += 1
         self._create_slider_widget("Faults:", self.params['faults'], 1, 1000, row); row += 2
         self._create_slider_widget("Water %:", self.params['water'], 0, 100, row); row += 2
+        self._create_slider_widget("Ice %:", self.params['ice'], 0, 100, row); row += 2
         self._create_slider_widget("Erosion:", self.params['erosion'], 0, 50, row); row += 2
         
         ttk.Label(self.controls_frame, text="Preset Palettes:").grid(row=row, column=0, columnspan=3, sticky='w', padx=5); row += 1
@@ -329,7 +476,9 @@ class App(tk.Tk):
         
     def _create_slider_widget(self, label_text, var, from_, to, row):
         ttk.Label(self.controls_frame, text=label_text).grid(row=row, column=0, columnspan=3, sticky='w', padx=5)
-        ttk.Scale(self.controls_frame, from_=from_, to=to, orient='horizontal', variable=var, command=lambda val, v=var: v.set(int(float(val)))).grid(row=row+1, column=0, columnspan=2, sticky='ew', padx=5)
+        is_double_var = isinstance(var, tk.DoubleVar)
+        command_func = (lambda val, v=var: v.set(float(val))) if is_double_var else (lambda val, v=var: v.set(int(float(val))))
+        ttk.Scale(self.controls_frame, from_=from_, to=to, orient='horizontal', variable=var, command=command_func).grid(row=row+1, column=0, columnspan=2, sticky='ew', padx=5)
         ttk.Entry(self.controls_frame, textvariable=var, width=7).grid(row=row+1, column=2, sticky='w', padx=5)
 
     def set_ui_state(self, is_generating):
@@ -403,6 +552,8 @@ class App(tk.Tk):
     def recolor_map(self):
         if not self.generator or self.generator.color_map is None: return
         self.generator.palette = self.palette
+        # MODIFIED: When recoloring, we need to re-finalize the map to re-apply ice logic
+        self.generator.finalize_map(self.generator.params['water'], self.generator.params.get('ice', 0))
         self.pil_image = self.generator.create_image()
         self.update_canvas()
 
