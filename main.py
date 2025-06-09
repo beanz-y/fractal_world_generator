@@ -83,7 +83,6 @@ class SimplexNoise:
             
         return 70.0 * (n0 + n1 + n2)
 
-    # ADDED: 3D noise function
     def noise3(self, x, y, z):
         s = (x + y + z) * self.F3
         i, j, k = math.floor(x + s), math.floor(y + s), math.floor(z + s)
@@ -130,7 +129,6 @@ class SimplexNoise:
             frequency *= lacunarity
         return total / max_value
 
-    # ADDED: Fractal noise for 3D coordinates
     def fractal_noise3(self, x, y, z, octaves, persistence, lacunarity):
         total, frequency, amplitude, max_value = 0.0, 1.0, 1.0, 0.0
         for _ in range(octaves):
@@ -324,7 +322,6 @@ class FractalWorldGenerator:
         
         altitude = (self.world_map - land_min) / (land_max - land_min)
         
-        # MODIFIED: Use tileable 3D noise for moisture map
         moisture = np.zeros_like(self.world_map, dtype=np.float32)
         scale = 3.0
         for y in range(self.y_range):
@@ -355,7 +352,6 @@ class FractalWorldGenerator:
     def _apply_ice_caps(self, percent_ice):
         if percent_ice <= 0: return
 
-        # MODIFIED: Use tileable 3D noise for ice caps
         noise_map = np.zeros((self.x_range, self.y_range))
         scale = 4.0
         for y in range(self.y_range):
@@ -504,6 +500,9 @@ class App(tk.Tk):
             'ice_seed': tk.IntVar(value=random.randint(0, 100000)),
             'moisture_seed': tk.IntVar(value=random.randint(0, 100000)),
             'map_style': tk.StringVar(value='Biome'),
+            'projection': tk.StringVar(value='Equirectangular'),
+            'rotation_x': tk.DoubleVar(value=0.0),
+            'rotation_y': tk.DoubleVar(value=0.0),
             'faults': tk.IntVar(value=200),
             'water': tk.DoubleVar(value=60.0),
             'ice': tk.DoubleVar(value=15.0),
@@ -531,10 +530,30 @@ class App(tk.Tk):
         
         ttk.Separator(self.controls_frame, orient='horizontal').grid(row=row, columnspan=3, sticky='ew', pady=10); row += 1
         
-        style_frame = ttk.Labelframe(self.controls_frame, text="Map Style")
-        style_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
-        ttk.Radiobutton(style_frame, text="Biome", variable=self.params['map_style'], value="Biome", command=self.on_style_change).pack(side=tk.LEFT, padx=5)
-        ttk.Radiobutton(style_frame, text="Terrain", variable=self.params['map_style'], value="Terrain", command=self.on_style_change).pack(side=tk.LEFT, padx=5)
+        view_frame = ttk.Labelframe(self.controls_frame, text="View Style")
+        view_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
+        
+        style_frame = ttk.Frame(view_frame)
+        style_frame.pack(fill=tk.X, padx=5, pady=2)
+        ttk.Label(style_frame, text="Style:").pack(side=tk.LEFT)
+        ttk.Radiobutton(style_frame, text="Biome", variable=self.params['map_style'], value="Biome", command=self.on_style_change).pack(side=tk.LEFT)
+        ttk.Radiobutton(style_frame, text="Terrain", variable=self.params['map_style'], value="Terrain", command=self.on_style_change).pack(side=tk.LEFT)
+
+        proj_frame = ttk.Frame(view_frame)
+        proj_frame.pack(fill=tk.X, padx=5, pady=2)
+        ttk.Label(proj_frame, text="Projection:").pack(side=tk.LEFT)
+        ttk.Radiobutton(proj_frame, text="2D", variable=self.params['projection'], value="Equirectangular", command=self.on_projection_change).pack(side=tk.LEFT)
+        ttk.Radiobutton(proj_frame, text="Globe", variable=self.params['projection'], value="Orthographic", command=self.on_projection_change).pack(side=tk.LEFT)
+
+        self.rotation_frame = ttk.Labelframe(self.controls_frame, text="Globe Rotation")
+        # MODIFIED: Corrected layout by placing this frame in the correct row
+        self.rotation_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
+
+        self._create_slider_widget("Yaw:", self.params['rotation_y'], -180, 180, 0, master=self.rotation_frame)
+        self._create_slider_widget("Pitch:", self.params['rotation_x'], -90, 90, 2, master=self.rotation_frame)
+        
+        self.params['rotation_y'].trace_add('write', lambda *_: self.redraw_canvas())
+        self.params['rotation_x'].trace_add('write', lambda *_: self.redraw_canvas())
 
         self._create_slider_widget("Faults:", self.params['faults'], 1, 1000, row); row += 2
         self._create_slider_widget("Water %:", self.params['water'], 0, 100, row); row += 2
@@ -576,6 +595,8 @@ class App(tk.Tk):
         self.save_button = ttk.Button(save_frame, text="Save Image As...", command=self.save_image, state=tk.DISABLED)
         self.save_button.pack(fill=tk.X, expand=True, padx=5)
 
+        self.on_projection_change()
+
     def _create_entry_widget(self, label_text, var, row, include_random_button=False):
         ttk.Label(self.controls_frame, text=label_text).grid(row=row, column=0, sticky='w', padx=5, pady=2)
         entry = ttk.Entry(self.controls_frame, textvariable=var, width=10)
@@ -584,12 +605,13 @@ class App(tk.Tk):
             button = ttk.Button(self.controls_frame, text="🎲", width=3, command=lambda v=var: v.set(random.randint(0, 100000)))
             button.grid(row=row, column=2, sticky='w')
         
-    def _create_slider_widget(self, label_text, var, from_, to, row):
-        ttk.Label(self.controls_frame, text=label_text).grid(row=row, column=0, columnspan=3, sticky='w', padx=5)
+    def _create_slider_widget(self, label_text, var, from_, to, row, master=None):
+        if master is None: master = self.controls_frame
+        ttk.Label(master, text=label_text).grid(row=row, column=0, columnspan=3, sticky='w', padx=5)
         is_double_var = isinstance(var, tk.DoubleVar)
         command_func = (lambda val, v=var: v.set(float(val))) if is_double_var else (lambda val, v=var: v.set(int(float(val))))
-        ttk.Scale(self.controls_frame, from_=from_, to=to, orient='horizontal', variable=var, command=command_func).grid(row=row+1, column=0, columnspan=2, sticky='ew', padx=5)
-        ttk.Entry(self.controls_frame, textvariable=var, width=7).grid(row=row+1, column=2, sticky='w', padx=5)
+        ttk.Scale(master, from_=from_, to=to, orient='horizontal', variable=var, command=command_func).grid(row=row+1, column=0, columnspan=2, sticky='ew', padx=5)
+        ttk.Entry(master, textvariable=var, width=7).grid(row=row+1, column=2, sticky='w', padx=5)
 
     def on_style_change(self):
         if not self.generator: return
@@ -600,6 +622,13 @@ class App(tk.Tk):
             self.palette_combobox.set('Default')
         self.apply_predefined_palette(None)
 
+    def on_projection_change(self):
+        if self.params['projection'].get() == 'Orthographic':
+            self.rotation_frame.grid()
+        else:
+            self.rotation_frame.grid_remove()
+        self.redraw_canvas()
+
     def _on_map_hover(self, event):
         if self.generator is None or self.generator.color_map is None:
             self.tooltip.hide()
@@ -607,7 +636,7 @@ class App(tk.Tk):
             
         map_x, map_y = self.canvas_to_image_coords(event.x, event.y)
         
-        if 0 <= map_x < self.generator.x_range and 0 <= map_y < self.generator.y_range:
+        if map_x is not None and 0 <= map_x < self.generator.x_range and 0 <= map_y < self.generator.y_range:
             color_index = self.generator.color_map.T[map_y, map_x]
             name = self.get_biome_name_from_index(color_index)
             if name:
@@ -671,41 +700,88 @@ class App(tk.Tk):
         if not hasattr(self, 'generator') or not self.generator or not self.generator.pil_image: return
         self.tooltip.hide()
         
-        pil_image = self.generator.pil_image
-        canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
+        projection = self.params['projection'].get()
 
-        if canvas_w <= 1 or canvas_h <= 1: return
-        
-        img_w, img_h = pil_image.size
-        view_w = img_w / self.zoom
-        view_h = img_h / self.zoom
-        
-        x0 = self.view_offset[0]
-        y0 = max(0, min(self.view_offset[1], img_h - view_h))
-        self.view_offset[1] = y0
-
-        x0_wrapped = x0 % img_w
-        
-        box1_x_end = min(img_w, x0_wrapped + view_w)
-        box1 = (x0_wrapped, y0, box1_x_end, y0 + view_h)
-        crop1 = pil_image.crop(box1)
-        
-        stitched_image = Image.new('RGB', (int(view_w), int(view_h)))
-        stitched_image.paste(crop1, (0, 0))
-        
-        if x0_wrapped + view_w > img_w:
-            remaining_w = (x0_wrapped + view_w) - img_w
-            box2 = (0, y0, remaining_w, y0 + view_h)
-            crop2 = pil_image.crop(box2)
-            stitched_image.paste(crop2, (crop1.width, 0))
+        if projection == 'Orthographic':
+            pil_image = self.generator.pil_image.convert('RGB')
+            source_array = np.array(pil_image)
             
-        resized_image = stitched_image.resize((canvas_w, canvas_h), Image.Resampling.NEAREST)
-        
+            canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
+            if canvas_w <= 1 or canvas_h <= 1: return
+
+            rot_y = math.radians(self.params['rotation_y'].get())
+            rot_x = math.radians(self.params['rotation_x'].get())
+
+            cy, sy = math.cos(rot_y), math.sin(rot_y)
+            cx, sx = math.cos(rot_x), math.sin(rot_x)
+            
+            canvas_coords_x, canvas_coords_y = np.meshgrid(np.arange(canvas_w), np.arange(canvas_h))
+            
+            radius = min(canvas_w, canvas_h) / 2
+            ndc_x = (canvas_coords_x - canvas_w / 2) / radius
+            ndc_y = (canvas_coords_y - canvas_h / 2) / radius
+            
+            z2 = 1 - ndc_x**2 - ndc_y**2
+            visible_mask = z2 >= 0 # Use >= to avoid artifacts at the very edge
+            z = np.sqrt(z2[visible_mask])
+            
+            x_ndc = ndc_x[visible_mask]
+            y_ndc = ndc_y[visible_mask]
+            
+            y_r1 = y_ndc * cx - z * sx
+            z_r1 = y_ndc * sx + z * cx
+            
+            x_r2 = x_ndc * cy - z_r1 * sy
+            z_r2 = x_ndc * sy + z_r1 * cy
+
+            lat = np.arcsin(-y_r1) # Inverted Y for correct pole orientation
+            lon = np.arctan2(x_r2, z_r2)
+            
+            src_x = ((lon / math.pi) * 0.5 + 0.5) * self.generator.x_range
+            src_y = ((-lat / math.pi) + 0.5) * self.generator.y_range
+            
+            src_x = np.clip(src_x, 0, self.generator.x_range - 1)
+            src_y = np.clip(src_y, 0, self.generator.y_range - 1)
+            
+            new_img_array = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+            new_img_array[canvas_coords_y[visible_mask], canvas_coords_x[visible_mask]] = source_array[src_y.astype(int), src_x.astype(int)]
+
+            resized_image = Image.fromarray(new_img_array)
+        else: # Equirectangular
+            pil_image = self.generator.pil_image
+            canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
+            if canvas_w <= 1 or canvas_h <= 1: return
+            
+            img_w, img_h = pil_image.size
+            view_w, view_h = img_w / self.zoom, img_h / self.zoom
+            
+            x0 = self.view_offset[0]
+            y0 = max(0, min(self.view_offset[1], img_h - view_h))
+            self.view_offset[1] = y0
+
+            x0_wrapped = x0 % img_w
+            
+            box1_x_end = min(img_w, x0_wrapped + view_w)
+            box1 = (x0_wrapped, y0, box1_x_end, y0 + view_h)
+            crop1 = pil_image.crop(box1)
+            
+            stitched_image = Image.new('RGB', (int(view_w), int(view_h)))
+            stitched_image.paste(crop1, (0, 0))
+            
+            if x0_wrapped + view_w > img_w:
+                remaining_w = (x0_wrapped + view_w) - img_w
+                box2 = (0, y0, remaining_w, y0 + view_h)
+                crop2 = pil_image.crop(box2)
+                stitched_image.paste(crop2, (crop1.width, 0))
+            
+            resized_image = stitched_image.resize((canvas_w, canvas_h), Image.Resampling.NEAREST)
+
         self.tk_image = ImageTk.PhotoImage(resized_image)
         self.canvas.delete("all")
         self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image)
 
     def canvas_to_image_coords(self, canvas_x, canvas_y):
+        if self.params['projection'].get() == 'Orthographic': return None, None
         if not hasattr(self, 'generator') or not self.generator or not self.generator.pil_image: return -1, -1
         
         img_w, img_h = self.generator.pil_image.size
@@ -723,6 +799,8 @@ class App(tk.Tk):
 
     def _on_zoom(self, event):
         if not self.generator or not self.generator.pil_image: return
+        if self.params['projection'].get() == 'Orthographic': return
+        
         factor = 1.1 if event.delta > 0 else 0.9
         img_x, img_y = self.canvas_to_image_coords(event.x, event.y)
         self.zoom *= factor
@@ -742,10 +820,18 @@ class App(tk.Tk):
 
     def _on_pan_move(self, event):
         if self.pan_start_pos is None: return
+        
         dx = event.x - self.pan_start_pos[0]
         dy = event.y - self.pan_start_pos[1]
-        self.view_offset[0] -= dx / self.zoom
-        self.view_offset[1] -= dy / self.zoom
+        
+        if self.params['projection'].get() == 'Orthographic':
+            # MODIFIED: Flipped signs for natural drag-to-rotate
+            self.params['rotation_y'].set(self.params['rotation_y'].get() + dx * 0.5)
+            self.params['rotation_x'].set(max(-90, min(90, self.params['rotation_x'].get() + dy * 0.5)))
+        else:
+            self.view_offset[0] -= dx / self.zoom
+            self.view_offset[1] -= dy / self.zoom
+        
         self.pan_start_pos = (event.x, event.y)
         self.redraw_canvas()
 
@@ -771,6 +857,7 @@ class App(tk.Tk):
                 with open(file_path, 'r') as f: loaded_params = json.load(f)
                 for key, var in self.params.items():
                     if key in loaded_params: var.set(loaded_params[key])
+                self.on_projection_change()
                 self.on_style_change()
             except Exception as e: tk.messagebox.showerror("Load Error", f"Failed to load preset:\n{e}")
 
