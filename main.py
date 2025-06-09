@@ -254,7 +254,7 @@ class FractalWorldGenerator:
         self.INT_MIN_PLACEHOLDER = -2**31
         self.world_map = None
         self.color_map = None
-        self.pil_image = None # ADDED: store pil_image here
+        self.pil_image = None
 
     def _add_fault(self):
         flag1 = random.randint(0, 1)
@@ -276,10 +276,8 @@ class FractalWorldGenerator:
     def _apply_erosion(self, erosion_passes):
         if erosion_passes <= 0: return
         heightmap = self.world_map.astype(np.float32)
-        # MODIFIED: Add progress updates for erosion
         for i in range(erosion_passes):
             if self.progress_callback:
-                # Erosion is weighted as 20% of the progress bar (from 50 to 70)
                 progress = 50 + int(20 * (i / erosion_passes))
                 self.progress_callback(progress, f"Eroding pass {i+1}/{erosion_passes}...")
             source_map = heightmap.copy()
@@ -308,38 +306,48 @@ class FractalWorldGenerator:
         octaves = 6
         persistence = 0.5
         lacunarity = 2.0
-
         for y in range(self.y_range):
             for x in range(self.x_range):
-                nx = x / scale
-                ny = y / scale
+                nx, ny = x / scale, y / scale
                 noise_map[x, y] = self.noise_generator.fractal_noise(nx, ny, octaves, persistence, lacunarity)
-        
         noise_map = (noise_map - np.min(noise_map)) / (np.max(noise_map) - np.min(noise_map))
 
         min_alt, max_alt = np.min(self.world_map), np.max(self.world_map)
         if max_alt == min_alt: max_alt = min_alt + 1
         altitude_factor = (self.world_map - min_alt) / (max_alt - min_alt)
-
         y_coords = np.arange(self.y_range)
         latitude_factor_1d = np.abs(y_coords - (self.y_range - 1) / 2.0) / (self.y_range / 2.0)
         latitude_factor = np.tile(latitude_factor_1d, (self.x_range, 1))
 
         ice_score_map = (1.2 * latitude_factor) + (0.5 * altitude_factor) + (0.4 * noise_map)
-        
         valid_pixels_mask = self.color_map > 0
-        if not np.any(valid_pixels_mask):
-            return
-
+        if not np.any(valid_pixels_mask): return
         ice_threshold = np.percentile(ice_score_map[valid_pixels_mask], 100 - percent_ice)
-
-        ice_color_index = 32
         ice_mask = (ice_score_map >= ice_threshold) & valid_pixels_mask
-        self.color_map[ice_mask] = ice_color_index
+        if not np.any(ice_mask): return
+
+        # MODIFIED: Entire coloring section updated for better visuals
+        ice_altitudes = self.world_map[ice_mask]
+        min_ice_alt, max_ice_alt = np.min(ice_altitudes), np.max(ice_altitudes)
+        if max_ice_alt == min_ice_alt: max_ice_alt = min_ice_alt + 1
+        
+        # Use a smaller range of base colors to keep the ice whiter overall.
+        ice_base_color_start = 32 
+        ice_num_base_colors = 4
+        
+        original_colors_under_ice = self.color_map[ice_mask]
+        
+        normalized_ice_alts = (ice_altitudes - min_ice_alt) / (max_ice_alt - min_ice_alt)
+        base_ice_colors = ice_base_color_start + np.floor(normalized_ice_alts * (ice_num_base_colors - 0.01))
+        
+        # Make the terrain modifier stronger to make underlying features stand out more.
+        # This creates larger jumps in the color index (0, 2, 4) based on what's underneath.
+        terrain_modifier = ((original_colors_under_ice / 10).astype(int) % 3) * 2
+        final_ice_colors = base_ice_colors + terrain_modifier
+        
+        self.color_map[ice_mask] = final_ice_colors
     
-    # MODIFIED: Broke down generate() to provide better progress updates
     def generate(self):
-        # Stage 1: Faulting (0% -> 50%)
         if self.progress_callback: self.progress_callback(0, "Generating faults...")
         self.world_map = np.full((self.x_range, self.y_range), self.INT_MIN_PLACEHOLDER, dtype=np.int32)
         self.y_range_div_2, self.y_range_div_pi = self.y_range / 2.0, self.y_range / np.pi
@@ -356,14 +364,11 @@ class FractalWorldGenerator:
         temp_map[temp_map == self.INT_MIN_PLACEHOLDER] = 0
         self.world_map = np.cumsum(temp_map, axis=1)
         
-        # Stage 2: Erosion (50% -> 70%)
         self._apply_erosion(self.params.get('erosion', 0))
         
-        # Stage 3: Finalizing (70% -> 95%)
         if self.progress_callback: self.progress_callback(70, "Finalizing map...")
         self.finalize_map(self.params['water'], self.params.get('ice', 0))
         
-        # Stage 4: Image Creation (95% -> 100%)
         if self.progress_callback: self.progress_callback(95, "Creating image...")
         self.pil_image = self.create_image()
         
@@ -426,7 +431,6 @@ class App(tk.Tk):
         self.image_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.canvas = tk.Canvas(self.image_frame, bg="gray")
         self.canvas.pack(fill=tk.BOTH, expand=True)
-        # MODIFIED: update_canvas now happens on configure to handle resizing
         self.canvas.bind("<Configure>", self.on_canvas_resize)
         
         self.palette = list(PREDEFINED_PALETTES["Default"])
@@ -466,7 +470,6 @@ class App(tk.Tk):
         
         self.progress = ttk.Progressbar(self.controls_frame, orient='horizontal', mode='determinate')
         self.progress.grid(row=row, columnspan=3, sticky='ew', pady=(5,0)); row += 1
-        # ADDED: Status label for progress description
         self.status_label = ttk.Label(self.controls_frame, text="Ready")
         self.status_label.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=(0,5)); row += 1
 
@@ -510,7 +513,6 @@ class App(tk.Tk):
     def set_ui_state(self, is_generating):
         state = tk.DISABLED if is_generating else tk.NORMAL
         for widget in [self.generate_button, self.ice_button, self.recolor_button, self.palette_button, self.save_button, self.palette_combobox]:
-            # The generate button is handled separately
             if widget != self.generate_button:
                 widget.config(state=tk.NORMAL if not is_generating and self.generator else tk.DISABLED)
         self.generate_button.config(state=state)
@@ -522,29 +524,23 @@ class App(tk.Tk):
         thread.start()
         
     def run_generation_in_thread(self, params_dict):
-        # The main generation logic now runs entirely in this thread
         self.generator = FractalWorldGenerator(params_dict, self.palette, self.update_generation_progress)
         self.pil_image = self.generator.generate()
-        # Schedule the UI update on the main thread when done
         self.after(0, self.finalize_generation)
 
-    # MODIFIED: New function to handle final UI state on the main thread
     def finalize_generation(self):
-        self.on_canvas_resize(None) # Redraw canvas with new image
+        self.on_canvas_resize(None)
         self.set_ui_state(is_generating=False)
         self.status_label.config(text="Ready")
 
-    # ADDED: New progress callback that updates the progress bar AND status label
     def update_generation_progress(self, value, text):
-        # Schedule UI updates from the worker thread
         self.after(0, lambda: (
             self.progress.config(value=value),
             self.status_label.config(text=text)
         ))
 
-    # MODIFIED: Renamed from update_canvas. Now only handles drawing.
     def on_canvas_resize(self, event):
-        if not self.generator or not self.generator.pil_image: return
+        if not hasattr(self, 'generator') or not self.generator or not self.generator.pil_image: return
 
         pil_image = self.generator.pil_image
         canvas_width = self.canvas.winfo_width()
@@ -597,12 +593,10 @@ class App(tk.Tk):
         self.generator.params['ice_seed'] = new_ice_seed
         self.generator.noise_generator = SimplexNoise(seed=new_ice_seed)
         
-        # Redo the finalization and image creation on a background thread
         thread = threading.Thread(target=self.run_ice_regeneration_in_thread, daemon=True)
         thread.start()
 
     def run_ice_regeneration_in_thread(self):
-        # A lightweight regeneration just for the ice
         self.update_generation_progress(0, "Finalizing map with new ice...")
         self.generator.finalize_map(self.params['water'].get(), self.params['ice'].get())
         self.update_generation_progress(50, "Creating image...")
