@@ -228,7 +228,7 @@ class FractalWorldGenerator:
         self.world_map = None
         self.color_map = None
         self.pil_image = None
-        self.color_map_before_ice = None # ADDED
+        self.color_map_before_ice = None
 
     def _add_fault(self):
         flag1 = random.randint(0, 1)
@@ -345,7 +345,6 @@ class FractalWorldGenerator:
         min_ice_alt, max_ice_alt = np.min(ice_altitudes), np.max(ice_altitudes)
         if max_ice_alt == min_ice_alt: max_ice_alt = min_ice_alt + 1
         
-        # MODIFIED: Adjusted color calculation to prevent mislabeling bug
         ice_base_color_start = 53
         ice_num_base_colors = 3
         
@@ -423,7 +422,6 @@ class FractalWorldGenerator:
             normalized_altitude = (self.world_map[land_mask] - land_min) / (land_max - land_min)
             self.color_map[land_mask] = 16 + np.floor(15.99 * normalized_altitude)
 
-        # ADDED: Store the pre-ice color map for enhanced tooltips
         self.color_map_before_ice = self.color_map.copy()
         self._apply_ice_caps(percent_ice)
 
@@ -477,13 +475,14 @@ class App(tk.Tk):
             'water': tk.DoubleVar(value=60.0),
             'ice': tk.DoubleVar(value=15.0),
             'erosion': tk.IntVar(value=5),
-            'placemark_name': tk.StringVar(value='New Location'),
+            'simulation_event': tk.StringVar(value='Ice Age Cycle'),
+            'simulation_frames': tk.IntVar(value=20),
         }
         self._create_control_widgets()
         self.tooltip = MapTooltip(self)
         self.canvas.bind("<Configure>", self.redraw_canvas)
         self.canvas.bind("<MouseWheel>", self._on_zoom)
-        self.canvas.bind("<ButtonPress-1>", self._on_mouse_down)
+        self.canvas.bind("<ButtonPress-1>", self._on_pan_start)
         self.canvas.bind("<ButtonRelease-1>", self._on_pan_end)
         self.canvas.bind("<B1-Motion>", self._on_pan_move)
         self.canvas.bind("<Motion>", self._on_map_hover)
@@ -533,14 +532,20 @@ class App(tk.Tk):
         self.palette_combobox.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=(0,10)); row += 1
         self.palette_combobox.bind("<<ComboboxSelected>>", self.apply_predefined_palette)
 
-        annot_frame = ttk.Labelframe(self.controls_frame, text="Annotations")
-        annot_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
-        label_entry = ttk.Entry(annot_frame, textvariable=self.params['placemark_name'])
-        label_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5, pady=5)
-        add_button = ttk.Button(annot_frame, text="Add Placemark", command=self.toggle_add_placemark_mode)
-        add_button.pack(side=tk.LEFT, padx=(0,5), pady=5)
-        clear_button = ttk.Button(annot_frame, text="Clear All", command=self.clear_placemarks)
-        clear_button.pack(side=tk.LEFT, padx=(0,5), pady=5)
+        sim_frame = ttk.Labelframe(self.controls_frame, text="Age Simulator")
+        sim_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
+        sim_top_frame = ttk.Frame(sim_frame)
+        sim_top_frame.pack(fill=tk.X, padx=5, pady=5)
+        ttk.Label(sim_top_frame, text="Event:").pack(side=tk.LEFT)
+        event_combo = ttk.Combobox(sim_top_frame, textvariable=self.params['simulation_event'], values=['Ice Age Cycle'], state="readonly")
+        event_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        sim_bottom_frame = ttk.Frame(sim_frame)
+        sim_bottom_frame.pack(fill=tk.X, padx=5, pady=5)
+        ttk.Label(sim_bottom_frame, text="Frames:").pack(side=tk.LEFT)
+        frames_entry = ttk.Entry(sim_bottom_frame, textvariable=self.params['simulation_frames'], width=5)
+        frames_entry.pack(side=tk.LEFT, padx=5)
+        self.run_sim_button = ttk.Button(sim_bottom_frame, text="Run Simulation", command=self.start_age_simulation, state=tk.DISABLED)
+        self.run_sim_button.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
         ttk.Separator(self.controls_frame, orient='horizontal').grid(row=row, columnspan=3, sticky='ew', pady=10); row += 1
         
@@ -605,37 +610,11 @@ class App(tk.Tk):
             self.rotation_frame.grid_remove()
         self.redraw_canvas()
 
-    def toggle_add_placemark_mode(self):
-        if not self.generator: return
-        self.adding_placemark = not self.adding_placemark
-        self.canvas.config(cursor="crosshair" if self.adding_placemark else "")
-
-    def add_placemark(self, canvas_x, canvas_y):
-        if not self.generator: return
-        map_x, map_y = self.canvas_to_image_coords(canvas_x, canvas_y)
-        if map_x is not None and 0 <= map_x < self.generator.x_range and 0 <= map_y < self.generator.y_range:
-            name = self.params['placemark_name'].get()
-            if not name: name = "Unnamed"
-            self.placemarks.append({'x': map_x, 'y': map_y, 'name': name})
-            self.redraw_canvas()
-
-    def clear_placemarks(self):
-        if not self.generator: return
-        self.placemarks.clear()
-        self.redraw_canvas()
-
     def _on_mouse_down(self, event):
-        if self.adding_placemark:
-            self.add_placemark(event.x, event.y)
-            self.toggle_add_placemark_mode()
-        else:
-            self._on_pan_start(event)
+        # This will be used for placemarks in a future update
+        self._on_pan_start(event)
     
     def _on_map_hover(self, event):
-        if self.adding_placemark:
-            self.canvas.config(cursor="crosshair")
-            return
-
         if self.generator is None or self.generator.color_map is None:
             self.tooltip.hide()
             return
@@ -643,7 +622,6 @@ class App(tk.Tk):
         map_x, map_y = self.canvas_to_image_coords(event.x, event.y)
         
         if map_x is not None and 0 <= map_x < self.generator.x_range and 0 <= map_y < self.generator.y_range:
-            # Get biome name based on final and pre-ice color maps
             final_color_index = self.generator.color_map.T[map_y, map_x]
             final_name = self.get_biome_name_from_index(final_color_index)
             
@@ -651,7 +629,7 @@ class App(tk.Tk):
             if final_name == "Ice" and self.generator.color_map_before_ice is not None:
                 underlying_color_index = self.generator.color_map_before_ice.T[map_y, map_x]
                 underlying_name = self.get_biome_name_from_index(underlying_color_index)
-                if underlying_name:
+                if underlying_name and underlying_name != "Ice":
                     display_text = f"Ice (over {underlying_name})"
 
             if display_text:
@@ -681,7 +659,7 @@ class App(tk.Tk):
         
     def set_ui_state(self, is_generating):
         state = tk.DISABLED if is_generating else tk.NORMAL
-        for widget in [self.generate_button, self.ice_button, self.recolor_button, self.palette_button, self.save_button, self.palette_combobox]:
+        for widget in [self.generate_button, self.ice_button, self.recolor_button, self.palette_button, self.save_button, self.palette_combobox, self.run_sim_button]:
             if widget != self.generate_button:
                 widget.config(state=tk.NORMAL if not is_generating and self.generator else tk.DISABLED)
         self.generate_button.config(state=state)
@@ -716,21 +694,11 @@ class App(tk.Tk):
         if not hasattr(self, 'generator') or not self.generator or not self.generator.pil_image: return
         self.tooltip.hide()
         
-        image_with_placemarks = self.generator.pil_image.copy()
-        
-        if self.params['projection'].get() == 'Equirectangular':
-            draw = ImageDraw.Draw(image_with_placemarks)
-            try: font = ImageFont.truetype("arial.ttf", 12)
-            except IOError: font = ImageFont.load_default()
-            for pm in self.placemarks:
-                x, y = pm['x'], pm['y']
-                draw.ellipse((x-2, y-2, x+2, y+2), fill='red', outline='black')
-                draw.text((x+5, y-6), pm['name'], fill="white", font=font, stroke_width=1, stroke_fill="black")
-
+        image_to_draw = self.generator.pil_image.copy()
         projection = self.params['projection'].get()
 
         if projection == 'Orthographic':
-            source_array = np.array(image_with_placemarks.convert('RGB'))
+            source_array = np.array(image_to_draw.convert('RGB'))
             canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
             if canvas_w <= 1 or canvas_h <= 1: return
 
@@ -760,8 +728,8 @@ class App(tk.Tk):
             new_img_array[canvas_coords_y[visible_mask], canvas_coords_x[visible_mask]] = source_array[src_y.astype(int), src_x.astype(int)]
 
             final_image = Image.fromarray(new_img_array)
-        else: # Equirectangular
-            img_w, img_h = image_with_placemarks.size
+        else:
+            img_w, img_h = image_to_draw.size
             view_w, view_h = img_w / self.zoom, img_h / self.zoom
             
             x0 = self.view_offset[0]
@@ -772,7 +740,7 @@ class App(tk.Tk):
             
             box1_x_end = min(img_w, x0_wrapped + view_w)
             box1 = (x0_wrapped, y0, box1_x_end, y0 + view_h)
-            crop1 = image_with_placemarks.crop(box1)
+            crop1 = image_to_draw.crop(box1)
             
             stitched_image = Image.new('RGB', (int(view_w), int(view_h)))
             stitched_image.paste(crop1, (0, 0))
@@ -780,7 +748,7 @@ class App(tk.Tk):
             if x0_wrapped + view_w > img_w:
                 remaining_w = (x0_wrapped + view_w) - img_w
                 box2 = (0, y0, remaining_w, y0 + view_h)
-                crop2 = image_with_placemarks.crop(box2)
+                crop2 = image_to_draw.crop(box2)
                 stitched_image.paste(crop2, (crop1.width, 0))
             
             final_image = stitched_image
@@ -860,7 +828,7 @@ class App(tk.Tk):
         if file_path:
             try:
                 img_with_placemarks = self.generator.pil_image.copy()
-                draw = ImageDraw.Draw(img_with_placemarks, "RGBA")
+                draw = ImageDraw.Draw(img_with_placemarks)
                 try: font = ImageFont.truetype("arial.ttf", 12)
                 except IOError: font = ImageFont.load_default()
                 for pm in self.placemarks:
@@ -872,7 +840,7 @@ class App(tk.Tk):
             except Exception as e: tk.messagebox.showerror("Save Error", f"Failed to save image:\n{e}")
 
     def save_preset(self):
-        params_to_save = {key: var.get() for key, var in self.params.items()}
+        params_to_save = {key: var.get() for key, var in self.params.items() if key != 'placemark_name'}
         params_to_save['placemarks'] = self.placemarks
         file_path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON Preset File", "*.json"), ("All Files", "*.*")], title="Save Preset As")
         if file_path:
@@ -942,6 +910,68 @@ class App(tk.Tk):
         self.palette = list(PREDEFINED_PALETTES[palette_name])
         self.recolor_map()
         
+    def start_age_simulation(self):
+        if not self.generator:
+            tk.messagebox.showwarning("No Map", "Please generate a map first.")
+            return
+
+        save_dir = filedialog.askdirectory(title="Select Folder to Save Animation Frames")
+        if not save_dir:
+            return
+
+        self.set_ui_state(is_generating=True)
+        
+        sim_params = {
+            'event': self.params['simulation_event'].get(),
+            'frames': self.params['simulation_frames'].get(),
+            'save_dir': save_dir,
+            'base_filename': os.path.basename(save_dir) 
+        }
+
+        thread = threading.Thread(target=self.run_age_simulation_in_thread, args=(sim_params,), daemon=True)
+        thread.start()
+
+    def run_age_simulation_in_thread(self, sim_params):
+        event, frames, save_dir, base_filename = sim_params['event'], sim_params['frames'], sim_params['save_dir'], sim_params['base_filename']
+        
+        start_water = self.params['water'].get()
+        start_ice = self.params['ice'].get()
+        
+        if event == 'Ice Age Cycle':
+            peak_ice = 90.0
+            peak_water = start_water - 10
+            midpoint = frames / 2.0
+            
+            for i in range(frames):
+                self.update_generation_progress(int((i + 1) / frames * 100), f"Rendering frame {i+1}/{frames}...")
+                
+                if i < midpoint:
+                    progress = i / midpoint
+                    current_ice = start_ice + (peak_ice - start_ice) * progress
+                    current_water = start_water + (peak_water - start_water) * progress
+                else:
+                    progress = (i - midpoint) / midpoint
+                    current_ice = peak_ice + (start_ice - peak_ice) * progress
+                    current_water = peak_water + (start_water - peak_water) * progress
+
+                self.generator.finalize_map(current_water, current_ice, self.params['map_style'].get())
+                frame_image = self.generator.create_image()
+
+                draw = ImageDraw.Draw(frame_image)
+                try: font = ImageFont.truetype("arial.ttf", 12)
+                except IOError: font = ImageFont.load_default()
+                for pm in self.placemarks:
+                    x, y = pm['x'], pm['y']
+                    draw.ellipse((x-2, y-2, x+2, y+2), fill='red', outline='black')
+                    draw.text((x+5, y-6), pm['name'], fill="white", font=font, stroke_width=1, stroke_fill="black")
+                
+                frame_image.save(os.path.join(save_dir, f"{base_filename}_{i+1:03d}.png"))
+
+        self.generator.finalize_map(start_water, start_ice, self.params['map_style'].get())
+        self.generator.pil_image = self.generator.create_image()
+        
+        self.after(0, self.finalize_generation)
+
 if __name__ == "__main__":
     app = App()
     app.mainloop()
