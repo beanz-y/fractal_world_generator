@@ -8,6 +8,7 @@ import threading
 from collections import deque
 import json
 import os
+import time
 
 class SimplexNoise:
     """
@@ -450,6 +451,9 @@ class App(tk.Tk):
         
         self.placemarks = []
         self.adding_placemark = False
+        
+        self.simulation_frames = []
+        self.current_frame_index = -1
 
         self.main_frame = ttk.Frame(self, padding="10")
         self.main_frame.pack(fill=tk.BOTH, expand=True)
@@ -467,6 +471,7 @@ class App(tk.Tk):
             'seed': tk.IntVar(value=random.randint(0, 100000)),
             'ice_seed': tk.IntVar(value=random.randint(0, 100000)),
             'moisture_seed': tk.IntVar(value=random.randint(0, 100000)),
+            'thaw_ice_seed': tk.IntVar(value=random.randint(0, 100000)),
             'map_style': tk.StringVar(value='Biome'),
             'projection': tk.StringVar(value='Equirectangular'),
             'rotation_x': tk.DoubleVar(value=0.0),
@@ -539,6 +544,15 @@ class App(tk.Tk):
         ttk.Label(sim_top_frame, text="Event:").pack(side=tk.LEFT)
         event_combo = ttk.Combobox(sim_top_frame, textvariable=self.params['simulation_event'], values=['Ice Age Cycle'], state="readonly")
         event_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        
+        sim_middle_frame = ttk.Frame(sim_frame)
+        sim_middle_frame.pack(fill=tk.X, padx=5, pady=2)
+        ttk.Label(sim_middle_frame, text="Thaw Ice Seed:").pack(side=tk.LEFT, padx=(5,0))
+        thaw_entry = ttk.Entry(sim_middle_frame, textvariable=self.params['thaw_ice_seed'], width=10)
+        thaw_entry.pack(side=tk.LEFT, padx=5)
+        thaw_random_button = ttk.Button(sim_middle_frame, text="🎲", width=3, command=lambda: self.params['thaw_ice_seed'].set(random.randint(0, 100000)))
+        thaw_random_button.pack(side=tk.LEFT)
+        
         sim_bottom_frame = ttk.Frame(sim_frame)
         sim_bottom_frame.pack(fill=tk.X, padx=5, pady=5)
         ttk.Label(sim_bottom_frame, text="Frames:").pack(side=tk.LEFT)
@@ -575,6 +589,18 @@ class App(tk.Tk):
         save_frame = ttk.Frame(self.controls_frame); save_frame.grid(row=row, columnspan=3, pady=5); row += 1
         self.save_button = ttk.Button(save_frame, text="Save Image As...", command=self.save_image, state=tk.DISABLED)
         self.save_button.pack(fill=tk.X, expand=True, padx=5)
+
+        self.frame_viewer_row = row; row += 1
+        self.frame_viewer_frame = ttk.Labelframe(self.controls_frame, text="Frame Viewer")
+        
+        frame_nav_frame = ttk.Frame(self.frame_viewer_frame)
+        frame_nav_frame.pack(pady=5)
+        self.prev_frame_button = ttk.Button(frame_nav_frame, text="< Prev", command=self.show_previous_frame, state=tk.DISABLED)
+        self.prev_frame_button.pack(side=tk.LEFT, padx=5)
+        self.frame_label = ttk.Label(frame_nav_frame, text="0 / 0")
+        self.frame_label.pack(side=tk.LEFT, padx=5)
+        self.next_frame_button = ttk.Button(frame_nav_frame, text="Next >", command=self.show_next_frame, state=tk.DISABLED)
+        self.next_frame_button.pack(side=tk.LEFT, padx=5)
 
         self.on_projection_change()
 
@@ -666,6 +692,9 @@ class App(tk.Tk):
 
     def start_generation(self):
         self.set_ui_state(is_generating=True)
+        self.frame_viewer_frame.grid_remove()
+        self.simulation_frames = []
+        self.current_frame_index = -1
         self.zoom = 1.0
         self.view_offset = [0, 0]
         self.placemarks = []
@@ -712,10 +741,10 @@ class App(tk.Tk):
             z2 = 1 - ndc_x**2 - ndc_y**2
             visible_mask = z2 >= 0
             z = np.sqrt(z2[visible_mask])
-            x_ndc, y_ndc = ndc_x[visible_mask], ndc_y[visible_mask]
+            x_ndc, y_ndc_masked = ndc_x[visible_mask], ndc_y[visible_mask]
             
-            y_r1 = y_ndc * cx - z * sx
-            z_r1 = y_ndc * sx + z * cx
+            y_r1 = y_ndc_masked * cx - z * sx
+            z_r1 = y_ndc_masked * sx + z * cx
             x_r2 = x_ndc * cy - z_r1 * sy
             z_r2 = x_ndc * sy + z_r1 * cy
 
@@ -769,7 +798,7 @@ class App(tk.Tk):
             z2 = 1 - ndc_x**2 - ndc_y**2
             if z2 < 0: return None, None
             z = math.sqrt(z2)
-            y_r1, z_r1 = y_ndc * cx - z * sx, y_ndc * sx + z * cx
+            y_r1, z_r1 = ndc_y * cx - z * sx, ndc_y * sx + z * cx
             x_r2, z_r2 = ndc_x * cy - z_r1 * sy, ndc_x * sy + z_r1 * cy
             lat, lon = math.asin(-y_r1), math.atan2(x_r2, z_r2)
             map_x = int(((lon / math.pi) * 0.5 + 0.5) * self.generator.x_range)
@@ -779,10 +808,15 @@ class App(tk.Tk):
         if not hasattr(self, 'generator') or not self.generator or not self.generator.pil_image: return -1, -1
         
         img_w, img_h = self.generator.pil_image.size
-        percent_x, percent_y = canvas_x / self.canvas.winfo_width(), canvas_y / self.canvas.winfo_height()
+        canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
+        if canvas_w == 0 or canvas_h == 0: return -1, -1
+        
+        percent_x, percent_y = canvas_x / canvas_w, canvas_y / canvas_h
         view_w, view_h = img_w / self.zoom, img_h / self.zoom
-        img_x = self.view_offset[0] + (percent_x * view_w)
+        
+        img_x = (self.view_offset[0] + (percent_x * view_w)) % img_w
         img_y = self.view_offset[1] + (percent_y * view_h)
+        
         return int(img_x), int(img_y)
 
     def _on_zoom(self, event):
@@ -920,6 +954,9 @@ class App(tk.Tk):
             return
 
         self.set_ui_state(is_generating=True)
+        self.frame_viewer_frame.grid_remove()
+        self.simulation_frames = []
+        self.current_frame_index = -1
         
         sim_params = {
             'event': self.params['simulation_event'].get(),
@@ -937,10 +974,19 @@ class App(tk.Tk):
         start_water = self.params['water'].get()
         start_ice = self.params['ice'].get()
         
+        original_ice_noise = self.generator.ice_noise
+        thaw_seed = self.params['thaw_ice_seed'].get()
+        
+        use_separate_thaw_seed = thaw_seed != self.params['ice_seed'].get()
+        if use_separate_thaw_seed:
+            thaw_ice_noise = SimplexNoise(seed=thaw_seed)
+
         if event == 'Ice Age Cycle':
             peak_ice = 90.0
             peak_water = start_water - 10
             midpoint = frames / 2.0
+            
+            switched_to_thaw_noise = False
             
             for i in range(frames):
                 self.update_generation_progress(int((i + 1) / frames * 100), f"Rendering frame {i+1}/{frames}...")
@@ -950,12 +996,28 @@ class App(tk.Tk):
                     current_ice = start_ice + (peak_ice - start_ice) * progress
                     current_water = start_water + (peak_water - start_water) * progress
                 else:
+                    if use_separate_thaw_seed and not switched_to_thaw_noise:
+                        self.generator.ice_noise = thaw_ice_noise
+                        switched_to_thaw_noise = True
+                    
                     progress = (i - midpoint) / midpoint
                     current_ice = peak_ice + (start_ice - peak_ice) * progress
                     current_water = peak_water + (start_water - peak_water) * progress
 
                 self.generator.finalize_map(current_water, current_ice, self.params['map_style'].get())
                 frame_image = self.generator.create_image()
+
+                # Store data for viewer
+                frame_data = {
+                    'image': frame_image.copy(),
+                    'color_map': self.generator.color_map.copy(),
+                    'color_map_before_ice': self.generator.color_map_before_ice.copy()
+                }
+                self.simulation_frames.append(frame_data)
+                
+                # Live preview
+                self.generator.pil_image = frame_image
+                self.after(0, self.redraw_canvas)
 
                 draw = ImageDraw.Draw(frame_image)
                 try: font = ImageFont.truetype("arial.ttf", 12)
@@ -966,11 +1028,43 @@ class App(tk.Tk):
                     draw.text((x+5, y-6), pm['name'], fill="white", font=font, stroke_width=1, stroke_fill="black")
                 
                 frame_image.save(os.path.join(save_dir, f"{base_filename}_{i+1:03d}.png"))
+                time.sleep(0.05) # Small delay to make preview smoother
 
-        self.generator.finalize_map(start_water, start_ice, self.params['map_style'].get())
-        self.generator.pil_image = self.generator.create_image()
+        self.generator.ice_noise = original_ice_noise
+        self.after(0, self.finalize_simulation)
+
+    def finalize_simulation(self):
+        if self.simulation_frames:
+            self.current_frame_index = len(self.simulation_frames) - 1
+            self.display_simulation_frame(self.current_frame_index)
+            self.frame_viewer_frame.grid(row=self.frame_viewer_row, columnspan=3, sticky='ew', padx=5, pady=5)
         
-        self.after(0, self.finalize_generation)
+        self.set_ui_state(is_generating=False)
+        self.status_label.config(text="Ready")
+
+    def show_previous_frame(self):
+        if self.simulation_frames and self.current_frame_index > 0:
+            self.current_frame_index -= 1
+            self.display_simulation_frame(self.current_frame_index)
+
+    def show_next_frame(self):
+        if self.simulation_frames and self.current_frame_index < len(self.simulation_frames) - 1:
+            self.current_frame_index += 1
+            self.display_simulation_frame(self.current_frame_index)
+
+    def display_simulation_frame(self, index):
+        if not self.simulation_frames or not (0 <= index < len(self.simulation_frames)):
+            return
+
+        frame_data = self.simulation_frames[index]
+        self.generator.pil_image = frame_data['image']
+        self.generator.color_map = frame_data['color_map']
+        self.generator.color_map_before_ice = frame_data['color_map_before_ice']
+        self.redraw_canvas()
+
+        self.frame_label.config(text=f"{index + 1} / {len(self.simulation_frames)}")
+        self.prev_frame_button.config(state=tk.NORMAL if index > 0 else tk.DISABLED)
+        self.next_frame_button.config(state=tk.NORMAL if index < len(self.simulation_frames) - 1 else tk.DISABLED)
 
 if __name__ == "__main__":
     app = App()
