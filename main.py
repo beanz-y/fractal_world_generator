@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, filedialog, colorchooser
+from tkinter import ttk, filedialog, colorchooser, simpledialog
 from PIL import Image, ImageTk, ImageDraw, ImageFont
 import numpy as np
 import random
@@ -103,15 +103,39 @@ class SimplexNoise:
             frequency *= lacunarity
         return total / max_value
 
+# New Biome Definitions based on Whittaker model
+# Ranges are for (temperature, moisture) from 0.0 to 1.0
+# 'idx' is the base color index, 'shades' is the number of colors for altitude shading
+BIOME_DEFINITIONS = {
+    'glacier':              {'idx': 52, 'shades': 4, 'temp_range': (0.0, 0.125), 'moist_range': (0.0, 1.0)},
+    'tundra':               {'idx': 48, 'shades': 4, 'temp_range': (0.125, 0.25), 'moist_range': (0.0, 1.0)},
+    'taiga':                {'idx': 40, 'shades': 8, 'temp_range': (0.25, 0.5), 'moist_range': (0.0, 0.33)},
+    'shrubland':            {'idx': 24, 'shades': 4, 'temp_range': (0.25, 0.5), 'moist_range': (0.33, 0.66)},
+    'temperate_forest':     {'idx': 32, 'shades': 8, 'temp_range': (0.25, 0.5), 'moist_range': (0.66, 1.0)},
+    'desert':               {'idx': 16, 'shades': 8, 'temp_range': (0.5, 1.0), 'moist_range': (0.0, 0.16)},
+    'savanna':              {'idx': 25, 'shades': 4, 'temp_range': (0.5, 1.0), 'moist_range': (0.16, 0.33)},
+    'tropical_forest':      {'idx': 33, 'shades': 4, 'temp_range': (0.5, 0.75), 'moist_range': (0.33, 0.66)},
+    'temperate_rainforest': {'idx': 34, 'shades': 4, 'temp_range': (0.5, 0.75), 'moist_range': (0.66, 1.0)},
+    'tropical_rainforest':  {'idx': 35, 'shades': 4, 'temp_range': (0.75, 1.0), 'moist_range': (0.33, 1.0)},
+}
+
+
 PREDEFINED_PALETTES = {
     "Biome": [
+        # Water (0-15)
         (0,0,0), (28,82,106), (43,105,128), (57,128,149), (72,150,171), (86,173,192), (101,196,214), (115,219,235),
         (0,0,0),(0,0,0),(0,0,0),(0,0,0),(0,0,0),(0,0,0),(0,0,0),(0,0,0),
+        # Desert (16-23)
         (249,225,184), (244,215,165), (239,205,146), (234,195,127), (229,185,108), (224,175,89), (219,165,70), (214,155,51),
+        # Savanna / Shrubland (24-31)
         (185,209,139), (170,198,121), (155,187,103), (140,176,85), (125,165,67), (110,154,49), (95,143,31), (80,132,13),
+        # Forest (32-39)
         (134,188,128), (119,173,113), (104,158,98), (89,143,83), (74,128,68), (59,113,53), (44,98,38), (29,83,23),
+        # Taiga (40-47)
         (180,191,170), (171,181,162), (162,171,153), (153,161,145), (144,151,136), (135,141,128), (126,131,119), (117,121,111),
+        # Tundra / Rock (48-51)
         (136,136,136), (150,150,150), (164,164,164), (178,178,178),
+        # Glacier / Polar Ice (52-55)
         (255,255,255), (245,245,245), (235,235,235), (225,225,225),
     ],
     "Default": [
@@ -205,7 +229,7 @@ class PaletteEditor(tk.Toplevel):
             except Exception as e: tk.messagebox.showerror("Load Error", f"Failed to load palette:\n{e}")
 
     def apply_and_close(self):
-        self.parent.palette = list(self.current_palette)
+        self.parent.palette = list(self.parent.palette)
         self.parent.recolor_map()
         self.destroy()
 
@@ -275,18 +299,18 @@ class FractalWorldGenerator:
         self.world_map = heightmap.astype(np.int32)
 
     def _apply_biomes(self, land_mask, land_min, land_max):
-        biome_defs = {
-            'rock':   {'base': 48, 'shades': 4}, 'tundra': {'base': 40, 'shades': 8},
-            'desert': {'base': 16, 'shades': 8}, 'plains': {'base': 24, 'shades': 8},
-            'forest': {'base': 32, 'shades': 8}
-        }
-        
+        # Temperature is based on latitude (y-axis) and altitude
         y_coords = np.arange(self.y_range)
-        temperature = 1.0 - (np.abs(y_coords - self.y_range / 2.0) / (self.y_range / 2.0))
-        temperature = np.tile(temperature, (self.x_range, 1))
+        latitude_temp = 1.0 - (np.abs(y_coords - self.y_range / 2.0) / (self.y_range / 2.0))
+        latitude_temp = np.tile(latitude_temp, (self.x_range, 1))
+
+        altitude_norm = (self.world_map - land_min) / (land_max - land_min)
+        altitude_temp_effect = self.params.get('altitude_temp_effect', 0.5)
         
-        altitude = (self.world_map - land_min) / (land_max - land_min)
-        
+        temperature = latitude_temp - (altitude_norm * altitude_temp_effect)
+        temperature = np.clip(temperature, 0, 1)
+
+        # Moisture is based on simplex noise
         moisture = np.zeros_like(self.world_map, dtype=np.float32)
         scale = 3.0
         for y in range(self.y_range):
@@ -297,22 +321,26 @@ class FractalWorldGenerator:
                 ny = y / (self.y_range/2) * scale
                 moisture[x,y] = self.moisture_noise.fractal_noise3(nx, ny, nz, 5, 0.5, 2.0)
         moisture = (moisture - np.min(moisture)) / (np.max(moisture) - np.min(moisture))
-        
-        biome_names = ['rock', 'tundra', 'desert', 'plains', 'forest']
-        conditions = [
-            altitude > 0.75, temperature < 0.2, moisture < 0.33,
-            moisture < 0.66, moisture >= 0.66
-        ]
-        
-        biome_type_map = np.select(conditions, biome_names, default='plains')
-        
-        for name, props in biome_defs.items():
-            current_biome_mask = (biome_type_map == name) & (land_mask)
-            if not np.any(current_biome_mask): continue
+
+        # Classify and color biomes
+        for name, props in BIOME_DEFINITIONS.items():
+            t_min, t_max = props['temp_range']
+            m_min, m_max = props['moist_range']
             
-            biome_altitudes = altitude[current_biome_mask]
-            color_indices = props['base'] + np.floor(biome_altitudes * (props['shades'] - 0.01))
-            self.color_map[current_biome_mask] = color_indices
+            biome_mask = (temperature >= t_min) & (temperature < t_max) & \
+                         (moisture >= m_min) & (moisture < m_max) & \
+                         land_mask
+
+            if np.any(biome_mask):
+                base_color = props['idx']
+                num_shades = props.get('shades', 1)
+                
+                biome_altitudes = altitude_norm[biome_mask]
+                
+                color_indices = base_color + np.floor(biome_altitudes * (num_shades - 0.01))
+                
+                self.color_map[biome_mask] = color_indices.astype(np.uint8)
+
 
     def _apply_ice_caps(self, percent_ice):
         if percent_ice <= 0: return
@@ -328,14 +356,13 @@ class FractalWorldGenerator:
                 noise_map[x, y] = self.ice_noise.fractal_noise3(nx, ny, nz, 6, 0.5, 2.0)
         noise_map = (noise_map - np.min(noise_map)) / (np.max(noise_map) - np.min(noise_map))
 
-        min_alt, max_alt = np.min(self.world_map), np.max(self.world_map)
-        if max_alt == min_alt: max_alt = min_alt + 1
-        altitude_factor = (self.world_map - min_alt) / (max_alt - min_alt)
         y_coords = np.arange(self.y_range)
         latitude_factor_1d = np.abs(y_coords - (self.y_range - 1) / 2.0) / (self.y_range / 2.0)
         latitude_factor = np.tile(latitude_factor_1d, (self.x_range, 1))
 
-        ice_score_map = (1.2 * latitude_factor) + (0.5 * altitude_factor) + (0.4 * noise_map)
+        # **FIX**: Removed altitude_factor from the ice_score_map to prevent polar ice on mountains
+        ice_score_map = (1.2 * latitude_factor) + (0.4 * noise_map)
+        
         valid_pixels_mask = self.color_map > 0
         if not np.any(valid_pixels_mask): return
         ice_threshold = np.percentile(ice_score_map[valid_pixels_mask], 100 - percent_ice)
@@ -450,7 +477,7 @@ class App(tk.Tk):
         self.pan_start_pos = None
         
         self.placemarks = []
-        self.adding_placemark = False
+        self.adding_placemark = tk.BooleanVar(value=False)
         
         self.simulation_frames = []
         self.current_frame_index = -1
@@ -480,14 +507,17 @@ class App(tk.Tk):
             'water': tk.DoubleVar(value=60.0),
             'ice': tk.DoubleVar(value=15.0),
             'erosion': tk.IntVar(value=5),
+            'altitude_temp_effect': tk.DoubleVar(value=0.5),
             'simulation_event': tk.StringVar(value='Ice Age Cycle'),
             'simulation_frames': tk.IntVar(value=20),
+            'hex_grid_visible': tk.BooleanVar(value=False),
+            'hex_grid_size': tk.IntVar(value=50),
         }
         self._create_control_widgets()
         self.tooltip = MapTooltip(self)
         self.canvas.bind("<Configure>", self.redraw_canvas)
         self.canvas.bind("<MouseWheel>", self._on_zoom)
-        self.canvas.bind("<ButtonPress-1>", self._on_pan_start)
+        self.canvas.bind("<ButtonPress-1>", self._on_canvas_press)
         self.canvas.bind("<ButtonRelease-1>", self._on_pan_end)
         self.canvas.bind("<B1-Motion>", self._on_pan_move)
         self.canvas.bind("<Motion>", self._on_map_hover)
@@ -526,10 +556,11 @@ class App(tk.Tk):
         self.params['rotation_y'].trace_add('write', lambda *_: self.redraw_canvas())
         self.params['rotation_x'].trace_add('write', lambda *_: self.redraw_canvas())
 
-        self._create_slider_widget("Faults:", self.params['faults'], 1, 1000, row); row += 2
-        self._create_slider_widget("Water %:", self.params['water'], 0, 100, row); row += 2
-        self._create_slider_widget("Ice %:", self.params['ice'], 0, 100, row); row += 2
-        self._create_slider_widget("Erosion:", self.params['erosion'], 0, 50, row); row += 2
+        self._create_slider_widget("Faults:", self.params['faults'], 1, 1000, row); row += 1
+        self._create_slider_widget("Water %:", self.params['water'], 0, 100, row); row += 1
+        self._create_slider_widget("Ice %:", self.params['ice'], 0, 100, row); row += 1
+        self._create_slider_widget("Erosion:", self.params['erosion'], 0, 50, row); row += 1
+        self._create_slider_widget("Altitude Temp. Effect:", self.params['altitude_temp_effect'], 0, 1, row); row += 1
         
         ttk.Label(self.controls_frame, text="Preset Palettes:").grid(row=row, column=0, columnspan=3, sticky='w', padx=5); row += 1
         self.palette_combobox = ttk.Combobox(self.controls_frame, values=list(PREDEFINED_PALETTES.keys()), state="readonly")
@@ -560,6 +591,18 @@ class App(tk.Tk):
         frames_entry.pack(side=tk.LEFT, padx=5)
         self.run_sim_button = ttk.Button(sim_bottom_frame, text="Run Simulation", command=self.start_age_simulation, state=tk.DISABLED)
         self.run_sim_button.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        overlay_frame = ttk.Labelframe(self.controls_frame, text="Overlay Tools")
+        overlay_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
+        overlay_frame.grid_columnconfigure(0, weight=1)
+        ttk.Checkbutton(overlay_frame, text="Show Hex Grid", variable=self.params['hex_grid_visible'], command=self.redraw_canvas).grid(row=0, column=0, sticky='w', padx=5)
+        self._create_slider_widget("Hex Size:", self.params['hex_grid_size'], 10, 200, 1, master=overlay_frame)
+        self.params['hex_grid_size'].trace_add('write', lambda *_: self.redraw_canvas())
+        
+        placemark_frame = ttk.Labelframe(self.controls_frame, text="Placemark Tools")
+        placemark_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
+        add_placemark_button = ttk.Checkbutton(placemark_frame, text="Add Placemark", variable=self.adding_placemark, command=self.toggle_placemark_mode)
+        add_placemark_button.pack(side=tk.LEFT, padx=5)
         
         ttk.Separator(self.controls_frame, orient='horizontal').grid(row=row, columnspan=3, sticky='ew', pady=10); row += 1
         
@@ -614,11 +657,23 @@ class App(tk.Tk):
         
     def _create_slider_widget(self, label_text, var, from_, to, row, master=None):
         if master is None: master = self.controls_frame
-        ttk.Label(master, text=label_text).grid(row=row, column=0, columnspan=3, sticky='w', padx=5)
+        
+        container = ttk.Frame(master)
+        
+        if label_text:
+            ttk.Label(container, text=label_text).grid(row=0, column=0, sticky='w', padx=5)
+        
         is_double_var = isinstance(var, tk.DoubleVar)
         command_func = (lambda val, v=var: v.set(float(val))) if is_double_var else (lambda val, v=var: v.set(int(float(val))))
-        ttk.Scale(master, from_=from_, to=to, orient='horizontal', variable=var, command=command_func).grid(row=row+1, column=0, columnspan=2, sticky='ew', padx=5)
-        ttk.Entry(master, textvariable=var, width=7).grid(row=row+1, column=2, sticky='w', padx=5)
+        
+        scale = ttk.Scale(container, from_=from_, to=to, orient='horizontal', variable=var, command=command_func)
+        scale.grid(row=1, column=0, sticky='ew', padx=5)
+        
+        entry = ttk.Entry(container, textvariable=var, width=7)
+        entry.grid(row=1, column=1, sticky='w', padx=5)
+        
+        container.grid(row=row, column=0, columnspan=2, sticky='ew')
+        container.grid_columnconfigure(0, weight=1)
 
     def on_style_change(self):
         if not self.generator: return
@@ -636,10 +691,24 @@ class App(tk.Tk):
             self.rotation_frame.grid_remove()
         self.redraw_canvas()
 
-    def _on_mouse_down(self, event):
-        # This will be used for placemarks in a future update
-        self._on_pan_start(event)
+    def _on_canvas_press(self, event):
+        if self.adding_placemark.get():
+            self._add_placemark_at_click(event)
+        else:
+            self._on_pan_start(event)
     
+    def _add_placemark_at_click(self, event):
+        if not self.generator: return
+        
+        placemark_name = simpledialog.askstring("New Placemark", "Enter a name for this location:", parent=self)
+        if not placemark_name:
+            return
+            
+        img_x, img_y = self.canvas_to_image_coords(event.x, event.y)
+        if img_x is not None:
+            self.placemarks.append({'name': placemark_name, 'x': img_x, 'y': img_y})
+            self.redraw_canvas()
+
     def _on_map_hover(self, event):
         if self.generator is None or self.generator.color_map is None:
             self.tooltip.hide()
@@ -648,18 +717,20 @@ class App(tk.Tk):
         map_x, map_y = self.canvas_to_image_coords(event.x, event.y)
         
         if map_x is not None and 0 <= map_x < self.generator.x_range and 0 <= map_y < self.generator.y_range:
+            elevation = self.generator.world_map.T[map_y, map_x]
             final_color_index = self.generator.color_map.T[map_y, map_x]
             final_name = self.get_biome_name_from_index(final_color_index)
             
             display_text = final_name
-            if final_name == "Ice" and self.generator.color_map_before_ice is not None:
+            if final_name and final_name.lower() == "polar ice" and self.generator.color_map_before_ice is not None:
                 underlying_color_index = self.generator.color_map_before_ice.T[map_y, map_x]
                 underlying_name = self.get_biome_name_from_index(underlying_color_index)
-                if underlying_name and underlying_name != "Ice":
-                    display_text = f"Ice (over {underlying_name})"
+                if underlying_name and underlying_name.lower() != "polar ice":
+                    display_text = f"Polar Ice (over {underlying_name})"
 
             if display_text:
-                self.tooltip.show(display_text, event.x_root, event.y_root)
+                full_display_text = f"{display_text}\nCoords: ({map_x}, {map_y})\nElevation: {elevation}"
+                self.tooltip.show(full_display_text, event.x_root, event.y_root)
             else:
                 self.tooltip.hide()
         else:
@@ -670,17 +741,14 @@ class App(tk.Tk):
         
     def get_biome_name_from_index(self, index):
         if self.params['map_style'].get() == 'Biome':
-            if 1 <= index <= 7: return "Water"
-            if 16 <= index <= 23: return "Desert"
-            if 24 <= index <= 31: return "Grassland"
-            if 32 <= index <= 39: return "Forest"
-            if 40 <= index <= 47: return "Tundra"
-            if 48 <= index <= 51: return "Rock"
-            if 52 <= index <= 55: return "Ice"
-        else:
-            if 1 <= index <= 15: return "Water"
-            if 16 <= index <= 31: return "Land"
-            if 32 <= index <= 55: return "Ice"
+            if 53 <= index <= 55:
+                return "Polar Ice"
+            for name, props in BIOME_DEFINITIONS.items():
+                if props['idx'] <= index < props['idx'] + props.get('shades', 1):
+                    return name.replace('_', ' ').title()
+        
+        if 1 <= index <= 7: return "Water"
+        if 16 <= index <= 31: return "Land"
         return None
         
     def set_ui_state(self, is_generating):
@@ -703,7 +771,10 @@ class App(tk.Tk):
         thread.start()
         
     def run_generation_in_thread(self, params_dict):
-        self.palette = list(PREDEFINED_PALETTES[params_dict['map_style']])
+        map_style = params_dict.get('map_style', 'Biome')
+        palette_name = 'Biome' if map_style == 'Biome' else 'Default'
+        self.palette = list(PREDEFINED_PALETTES[palette_name])
+
         self.generator = FractalWorldGenerator(params_dict, self.palette, self.update_generation_progress)
         self.pil_image = self.generator.generate()
         self.after(0, self.finalize_generation)
@@ -718,16 +789,71 @@ class App(tk.Tk):
             self.progress.config(value=value),
             self.status_label.config(text=text)
         ))
+        
+    def _draw_placemarks_on_image(self, image):
+        if not self.placemarks:
+            return image
+        
+        draw = ImageDraw.Draw(image)
+        try:
+            font = ImageFont.truetype("arial.ttf", 15)
+        except IOError:
+            font = ImageFont.load_default()
+            
+        for pm in self.placemarks:
+            x, y = pm['x'], pm['y']
+            draw.ellipse((x-3, y-3, x+3, y+3), fill='red', outline='black')
+            draw.text((x+5, y-8), pm['name'], fill="black", font=font, stroke_width=2, stroke_fill="white")
+            
+        return image
+        
+    def _draw_hex_grid_on_image(self, image):
+        if not self.params['hex_grid_visible'].get():
+            return image
+
+        size = self.params['hex_grid_size'].get()
+        if size <= 0: return image
+
+        overlay = Image.new('RGBA', image.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        
+        hex_width = math.sqrt(3) * size
+        vert_dist = size * 1.5
+        
+        q_end = int(image.width / hex_width) + 2
+        r_end = int(image.height / vert_dist) + 2
+        
+        for r in range(-1, r_end):
+            for q in range(-1, q_end):
+                hex_center_x = q * hex_width
+                if r % 2 != 0:
+                    hex_center_x += hex_width / 2.0
+                hex_center_y = r * vert_dist
+                
+                points = []
+                for i in range(6):
+                    angle_deg = 60 * i + 30
+                    angle_rad = math.pi / 180 * angle_deg
+                    point_x = hex_center_x + size * math.cos(angle_rad)
+                    point_y = hex_center_y + size * math.sin(angle_rad)
+                    points.append((point_x, point_y))
+                
+                draw.polygon(points, outline=(0, 0, 0, 128), fill=None)
+                
+        return Image.alpha_composite(image.convert('RGBA'), overlay).convert('RGB')
+
 
     def redraw_canvas(self, event=None):
         if not hasattr(self, 'generator') or not self.generator or not self.generator.pil_image: return
         self.tooltip.hide()
         
-        image_to_draw = self.generator.pil_image.copy()
+        image_with_overlays = self._draw_hex_grid_on_image(
+            self._draw_placemarks_on_image(self.generator.pil_image.copy())
+        )
         projection = self.params['projection'].get()
 
         if projection == 'Orthographic':
-            source_array = np.array(image_to_draw.convert('RGB'))
+            source_array = np.array(image_with_overlays.convert('RGB'))
             canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
             if canvas_w <= 1 or canvas_h <= 1: return
 
@@ -741,12 +867,12 @@ class App(tk.Tk):
             z2 = 1 - ndc_x**2 - ndc_y**2
             visible_mask = z2 >= 0
             z = np.sqrt(z2[visible_mask])
-            x_ndc, y_ndc_masked = ndc_x[visible_mask], ndc_y[visible_mask]
+            x_ndc_masked, y_ndc_masked = ndc_x[visible_mask], ndc_y[visible_mask]
             
             y_r1 = y_ndc_masked * cx - z * sx
             z_r1 = y_ndc_masked * sx + z * cx
-            x_r2 = x_ndc * cy - z_r1 * sy
-            z_r2 = x_ndc * sy + z_r1 * cy
+            x_r2 = x_ndc_masked * cy - z_r1 * sy
+            z_r2 = x_ndc_masked * sy + z_r1 * cy
 
             lat, lon = np.arcsin(-y_r1), np.arctan2(x_r2, z_r2)
             
@@ -758,7 +884,7 @@ class App(tk.Tk):
 
             final_image = Image.fromarray(new_img_array)
         else:
-            img_w, img_h = image_to_draw.size
+            img_w, img_h = image_with_overlays.size
             view_w, view_h = img_w / self.zoom, img_h / self.zoom
             
             x0 = self.view_offset[0]
@@ -769,7 +895,7 @@ class App(tk.Tk):
             
             box1_x_end = min(img_w, x0_wrapped + view_w)
             box1 = (x0_wrapped, y0, box1_x_end, y0 + view_h)
-            crop1 = image_to_draw.crop(box1)
+            crop1 = image_with_overlays.crop(box1)
             
             stitched_image = Image.new('RGB', (int(view_w), int(view_h)))
             stitched_image.paste(crop1, (0, 0))
@@ -777,7 +903,7 @@ class App(tk.Tk):
             if x0_wrapped + view_w > img_w:
                 remaining_w = (x0_wrapped + view_w) - img_w
                 box2 = (0, y0, remaining_w, y0 + view_h)
-                crop2 = image_to_draw.crop(box2)
+                crop2 = image_with_overlays.crop(box2)
                 stitched_image.paste(crop2, (crop1.width, 0))
             
             final_image = stitched_image
@@ -833,16 +959,17 @@ class App(tk.Tk):
         self.redraw_canvas()
 
     def _on_pan_start(self, event):
-        if self.adding_placemark: return
         self.pan_start_pos = (event.x, event.y)
-        self.canvas.config(cursor="fleur")
+        if not self.adding_placemark.get():
+            self.canvas.config(cursor="fleur")
 
     def _on_pan_end(self, event):
         self.pan_start_pos = None
-        self.canvas.config(cursor="")
+        if not self.adding_placemark.get():
+            self.canvas.config(cursor="")
 
     def _on_pan_move(self, event):
-        if self.pan_start_pos is None: return
+        if self.pan_start_pos is None or self.adding_placemark.get(): return
         
         dx, dy = event.x - self.pan_start_pos[0], event.y - self.pan_start_pos[1]
         
@@ -855,26 +982,25 @@ class App(tk.Tk):
         
         self.pan_start_pos = (event.x, event.y)
         self.redraw_canvas()
+        
+    def toggle_placemark_mode(self):
+        if self.adding_placemark.get():
+            self.canvas.config(cursor="crosshair")
+        else:
+            self.canvas.config(cursor="")
 
     def save_image(self):
         if not self.generator or not self.generator.pil_image: return
         file_path = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG Image", "*.png"), ("JPEG Image", "*.jpg"), ("All Files", "*.*")])
         if file_path:
             try:
-                img_with_placemarks = self.generator.pil_image.copy()
-                draw = ImageDraw.Draw(img_with_placemarks)
-                try: font = ImageFont.truetype("arial.ttf", 12)
-                except IOError: font = ImageFont.load_default()
-                for pm in self.placemarks:
-                    x, y = pm['x'], pm['y']
-                    draw.ellipse((x-2, y-2, x+2, y+2), fill='red', outline='black')
-                    draw.text((x+5, y-6), pm['name'], fill="white", font=font, stroke_width=1, stroke_fill="black")
-                img_with_placemarks.save(file_path)
+                img_with_overlays = self._draw_hex_grid_on_image(self._draw_placemarks_on_image(self.generator.pil_image.copy()))
+                img_with_overlays.save(file_path)
 
             except Exception as e: tk.messagebox.showerror("Save Error", f"Failed to save image:\n{e}")
 
     def save_preset(self):
-        params_to_save = {key: var.get() for key, var in self.params.items() if key != 'placemark_name'}
+        params_to_save = {key: var.get() for key, var in self.params.items()}
         params_to_save['placemarks'] = self.placemarks
         file_path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON Preset File", "*.json"), ("All Files", "*.*")], title="Save Preset As")
         if file_path:
@@ -891,6 +1017,7 @@ class App(tk.Tk):
                     if key in loaded_params: var.set(loaded_params[key])
                 
                 self.placemarks = loaded_params.get('placemarks', [])
+                self.redraw_canvas()
 
                 self.on_projection_change()
                 self.on_style_change()
@@ -902,42 +1029,17 @@ class App(tk.Tk):
     def regenerate_ice(self):
         if not self.generator: return
         self.set_ui_state(is_generating=True)
-        thread = threading.Thread(target=self.run_ice_regeneration_in_thread, daemon=True)
+        params_dict = {key: var.get() for key, var in self.params.items()}
+        thread = threading.Thread(target=self.run_generation_in_thread, args=(params_dict,), daemon=True)
         thread.start()
-
-    def run_ice_regeneration_in_thread(self):
-        self.update_generation_progress(0, "Finalizing map with new ice...")
-        self.generator.params['ice_seed'] = self.params['ice_seed'].get()
-        self.generator.ice_noise = SimplexNoise(seed=self.generator.params['ice_seed'])
-        self.generator.finalize_map(
-            self.params['water'].get(),
-            self.params['ice'].get(),
-            self.params['map_style'].get()
-        )
-        self.update_generation_progress(50, "Creating image...")
-        self.generator.pil_image = self.generator.create_image()
-        self.update_generation_progress(100, "Done.")
-        self.after(0, self.finalize_generation)
 
     def recolor_map(self):
         if not self.generator or self.generator.color_map is None: return
         self.set_ui_state(is_generating=True)
-        thread = threading.Thread(target=self.run_recolor_in_thread, daemon=True)
+        params_dict = {key: var.get() for key, var in self.params.items()}
+        thread = threading.Thread(target=self.run_generation_in_thread, args=(params_dict,), daemon=True)
         thread.start()
         
-    def run_recolor_in_thread(self):
-        self.update_generation_progress(0, "Updating styles...")
-        self.generator.palette = self.palette
-        self.generator.finalize_map(
-            self.params['water'].get(),
-            self.params['ice'].get(),
-            self.params['map_style'].get()
-        )
-        self.update_generation_progress(50, "Creating image...")
-        self.generator.pil_image = self.generator.create_image()
-        self.update_generation_progress(100, "Done.")
-        self.after(0, self.finalize_generation)
-
     def apply_predefined_palette(self, event=None):
         if not self.generator: return
         palette_name = self.palette_combobox.get()
@@ -1007,7 +1109,6 @@ class App(tk.Tk):
                 self.generator.finalize_map(current_water, current_ice, self.params['map_style'].get())
                 frame_image = self.generator.create_image()
 
-                # Store data for viewer
                 frame_data = {
                     'image': frame_image.copy(),
                     'color_map': self.generator.color_map.copy(),
@@ -1015,20 +1116,12 @@ class App(tk.Tk):
                 }
                 self.simulation_frames.append(frame_data)
                 
-                # Live preview
                 self.generator.pil_image = frame_image
                 self.after(0, self.redraw_canvas)
 
-                draw = ImageDraw.Draw(frame_image)
-                try: font = ImageFont.truetype("arial.ttf", 12)
-                except IOError: font = ImageFont.load_default()
-                for pm in self.placemarks:
-                    x, y = pm['x'], pm['y']
-                    draw.ellipse((x-2, y-2, x+2, y+2), fill='red', outline='black')
-                    draw.text((x+5, y-6), pm['name'], fill="white", font=font, stroke_width=1, stroke_fill="black")
-                
-                frame_image.save(os.path.join(save_dir, f"{base_filename}_{i+1:03d}.png"))
-                time.sleep(0.05) # Small delay to make preview smoother
+                frame_image_with_overlays = self._draw_hex_grid_on_image(self._draw_placemarks_on_image(frame_image))
+                frame_image_with_overlays.save(os.path.join(save_dir, f"{base_filename}_{i+1:03d}.png"))
+                time.sleep(0.05) 
 
         self.generator.ice_noise = original_ice_noise
         self.after(0, self.finalize_simulation)
