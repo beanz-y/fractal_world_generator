@@ -13,6 +13,8 @@ import time
 from world_generator import FractalWorldGenerator, PREDEFINED_PALETTES, BIOME_DEFINITIONS
 from utils import MapTooltip, PaletteEditor
 
+Image.MAX_IMAGE_PIXELS = None
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()

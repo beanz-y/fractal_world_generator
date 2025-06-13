@@ -3,6 +3,70 @@ import random
 import math
 from PIL import Image # type: ignore
 from utils import SimplexNoise
+import numba # type: ignore
+
+# --- Numba-Optimized Simplex Noise Functions ---
+# This section contains a JIT-compiled implementation of the Simplex Noise logic.
+# By moving these calculations into functions that Numba can optimize, we can
+# significantly speed up the generation of moisture and ice noise maps.
+
+F3 = 1.0 / 3.0
+G3 = 1.0 / 6.0
+
+@numba.jit(nopython=True, fastmath=True)
+def _dot3_jit(grad, x, y, z):
+    """Numba-compatible dot product for 3D vectors."""
+    return grad[0] * x + grad[1] * y + grad[2] * z
+
+@numba.jit(nopython=True, fastmath=True)
+def _noise3_jit(x, y, z, perm, grad3):
+    """Numba-compatible 3D Simplex Noise calculation."""
+    s = (x + y + z) * F3
+    i, j, k = int(math.floor(x + s)), int(math.floor(y + s)), int(math.floor(z + s))
+    t = (i + j + k) * G3
+    x0, y0, z0 = x - (i - t), y - (j - t), z - (k - t)
+
+    if x0 >= y0:
+        if y0 >= z0: i1, j1, k1, i2, j2, k2 = 1, 0, 0, 1, 1, 0
+        elif x0 >= z0: i1, j1, k1, i2, j2, k2 = 1, 0, 0, 1, 0, 1
+        else: i1, j1, k1, i2, j2, k2 = 0, 0, 1, 1, 0, 1
+    else:
+        if y0 < z0: i1, j1, k1, i2, j2, k2 = 0, 0, 1, 0, 1, 1
+        elif x0 < z0: i1, j1, k1, i2, j2, k2 = 0, 1, 0, 0, 1, 1
+        else: i1, j1, k1, i2, j2, k2 = 0, 1, 0, 1, 1, 0
+
+    x1, y1, z1 = x0 - i1 + G3, y0 - j1 + G3, z0 - k1 + G3
+    x2, y2, z2 = x0 - i2 + 2 * G3, y0 - j2 + 2 * G3, z0 - k2 + 2 * G3
+    x3, y3, z3 = x0 - 1.0 + 3 * G3, y0 - 1.0 + 3 * G3, z0 - 1.0 + 3 * G3
+
+    ii, jj, kk = i & 255, j & 255, k & 255
+    
+    gi0 = perm[ii + perm[jj + perm[kk]]] % 12
+    gi1 = perm[ii + i1 + perm[jj + j1 + perm[kk + k1]]] % 12
+    gi2 = perm[ii + i2 + perm[jj + j2 + perm[kk + k2]]] % 12
+    gi3 = perm[ii + 1 + perm[jj + 1 + perm[kk + 1]]] % 12
+
+    t0 = 0.6 - x0 * x0 - y0 * y0 - z0 * z0
+    n0 = t0**4 * _dot3_jit(grad3[gi0], x0, y0, z0) if t0 > 0 else 0.0
+    t1 = 0.6 - x1 * x1 - y1 * y1 - z1 * z1
+    n1 = t1**4 * _dot3_jit(grad3[gi1], x1, y1, z1) if t1 > 0 else 0.0
+    t2 = 0.6 - x2 * x2 - y2 * y2 - z2 * z2
+    n2 = t2**4 * _dot3_jit(grad3[gi2], x2, y2, z2) if t2 > 0 else 0.0
+    t3 = 0.6 - x3 * x3 - y3 * y3 - z3 * z3
+    n3 = t3**4 * _dot3_jit(grad3[gi3], x3, y3, z3) if t3 > 0 else 0.0
+    
+    return 32.0 * (n0 + n1 + n2 + n3)
+
+@numba.jit(nopython=True, fastmath=True)
+def _fractal_noise3_jit(x, y, z, perm, grad3, octaves, persistence, lacunarity):
+    """Numba-compatible fractal noise (fBm)."""
+    total, frequency, amplitude, max_value = 0.0, 1.0, 1.0, 0.0
+    for _ in range(octaves):
+        total += _noise3_jit(x * frequency, y * frequency, z * frequency, perm, grad3) * amplitude
+        max_value += amplitude
+        amplitude *= persistence
+        frequency *= lacunarity
+    return total / max_value if max_value > 0 else 0
 
 # New Biome Definitions based on Whittaker model
 # Ranges are for (temperature, moisture) from 0.0 to 1.0
@@ -53,6 +117,16 @@ PREDEFINED_PALETTES = {
     ],
 }
 
+# FIX: Create a helper function for clipping scalar values that Numba can compile.
+@numba.jit(nopython=True)
+def scalar_clip(value, min_val, max_val):
+    if value < min_val:
+        return min_val
+    elif value > max_val:
+        return max_val
+    else:
+        return value
+
 class FractalWorldGenerator:
     def __init__(self, params, palette, progress_callback=None):
         self.params = params
@@ -67,6 +141,12 @@ class FractalWorldGenerator:
         moisture_seed = self.params.get('moisture_seed', self.seed)
         self.ice_noise = SimplexNoise(seed=ice_seed)
         self.moisture_noise = SimplexNoise(seed=moisture_seed)
+        
+        # OPTIMIZATION: Prepare noise data for Numba
+        self.moisture_perm = np.array(self.moisture_noise.perm, dtype=np.int64)
+        self.moisture_grad3 = np.array(self.moisture_noise.grad3, dtype=np.float64)
+        self.ice_perm = np.array(self.ice_noise.perm, dtype=np.int64)
+        self.ice_grad3 = np.array(self.ice_noise.grad3, dtype=np.float64)
 
         self.palette = palette
         self.INT_MIN_PLACEHOLDER = -2**31
@@ -75,50 +155,100 @@ class FractalWorldGenerator:
         self.pil_image = None
         self.color_map_before_ice = None
 
+    # OPTIMIZATION: JIT-compiled function to generate a complete noise map in parallel
+    @staticmethod
+    @numba.jit(nopython=True, parallel=True, fastmath=True)
+    def _numba_generate_noise_map(x_range, y_range, perm, grad3, scale, octaves, persistence, lacunarity):
+        noise_map = np.empty((x_range, y_range), dtype=np.float32)
+        
+        # Constants for coordinate calculation
+        two_pi = 2 * np.pi
+        inv_two_pi = 1 / two_pi
+        y_scale_factor = 2 / y_range if y_range > 0 else 0
+
+        # Use numba.prange for a parallelized for-loop
+        for y in numba.prange(y_range):
+            for x in range(x_range):
+                angle = two_pi * (x / x_range)
+                nx = inv_two_pi * scale * np.cos(angle)
+                nz = inv_two_pi * scale * np.sin(angle)
+                ny = y * y_scale_factor * scale
+                noise_map[x, y] = _fractal_noise3_jit(nx, ny, nz, perm, grad3, octaves, persistence, lacunarity)
+        return noise_map
+
+    # This is a new helper method that will be JIT-compiled
+    @staticmethod
+    @numba.jit(nopython=True)
+    def _numba_add_fault_line(world_map, x_range, y_range, y_range_div_pi, y_range_div_2, sin_iter_phi, flag1, beta, alpha):
+        # FIX: Use the custom scalar_clip function instead of np.clip
+        cos_val = np.cos(alpha) * np.cos(beta)
+        clipped_cos = scalar_clip(cos_val, -1.0, 1.0)
+        tan_b = np.tan(np.arccos(clipped_cos))
+        
+        xsi = int(x_range / 2.0 - (x_range / np.pi) * beta)
+        delta = 1 if flag1 else -1
+
+        for phi in range(x_range):
+            sin_val = sin_iter_phi[xsi - phi + x_range]
+            theta = int((y_range_div_pi * np.arctan(sin_val * tan_b)) + y_range_div_2)
+            theta = max(0, min(y_range - 1, theta))
+            
+            if world_map[phi, theta] == -2147483648: # INT_MIN_PLACEHOLDER
+                world_map[phi, theta] = delta
+            else:
+                world_map[phi, theta] += delta
+        return world_map
+
     def _add_fault(self):
         flag1 = random.randint(0, 1)
         alpha, beta = (random.random() - 0.5) * np.pi, (random.random() - 0.5) * np.pi
-        tan_b = np.tan(np.arccos(np.clip(np.cos(alpha) * np.cos(beta), -1.0, 1.0)))
-        xsi = int(self.x_range / 2.0 - (self.x_range / np.pi) * beta)
         
-        for phi in range(self.x_range):
-            sin_val = self.sin_iter_phi[xsi - phi + self.x_range]
-            theta = int((self.y_range_div_pi * np.arctan(sin_val * tan_b)) + self.y_range_div_2)
-            theta = max(0, min(self.y_range - 1, theta))
-            idx = (phi, theta)
-            delta = 1 if flag1 else -1
-            if self.world_map[idx] != self.INT_MIN_PLACEHOLDER:
-                self.world_map[idx] += delta
-            else:
-                self.world_map[idx] = delta
-                
-    def _apply_erosion(self, erosion_passes):
-        if erosion_passes <= 0: return
-        
-        if self.progress_callback: self.progress_callback(30, "Applying erosion...")
-        heightmap = self.world_map.astype(np.float32)
-        for i in range(erosion_passes):
-            if self.progress_callback:
-                progress = 30 + int(10 * ((i + 1) / erosion_passes))
-                self.progress_callback(progress, f"Eroding pass {i+1}/{erosion_passes}...")
+        # Call the new JIT-compiled method
+        self.world_map = self._numba_add_fault_line(
+            self.world_map, self.x_range, self.y_range, 
+            self.y_range_div_pi, self.y_range_div_2, 
+            self.sin_iter_phi, flag1, beta, alpha
+        )
 
+    @staticmethod
+    @numba.jit(nopython=True) # Add this decorator
+    def _numba_apply_erosion(heightmap, x_range, y_range, erosion_passes):
+        for i in range(erosion_passes):
             source_map = heightmap.copy()
-            for y in range(self.y_range):
-                for x in range(self.x_range):
+            for y in range(y_range):
+                for x in range(x_range):
                     current_height = source_map[x, y]
-                    lowest_neighbor_height, lowest_nx, lowest_ny = current_height, x, y
+                    lowest_neighbor_height = current_height
+                    lowest_nx, lowest_ny = x, y
+
+                    # Check neighbors
                     for dy in [-1, 0, 1]:
                         for dx in [-1, 0, 1]:
-                            if dx == 0 and dy == 0: continue
-                            nx, ny = (x + dx + self.x_range) % self.x_range, y + dy
-                            if 0 <= ny < self.y_range and source_map[nx, ny] < lowest_neighbor_height:
-                                lowest_neighbor_height, lowest_nx, lowest_ny = source_map[nx, ny], nx, ny
+                            if dx == 0 and dy == 0:
+                                continue
+                            nx, ny = (x + dx + x_range) % x_range, y + dy
+                            if 0 <= ny < y_range:
+                                if source_map[nx, ny] < lowest_neighbor_height:
+                                    lowest_neighbor_height = source_map[nx, ny]
+                                    lowest_nx, lowest_ny = nx, ny
+                    
+                    # Move sediment
                     if lowest_neighbor_height < current_height:
                         sediment_amount = (current_height - lowest_neighbor_height) * 0.1
                         heightmap[x, y] -= sediment_amount
                         heightmap[lowest_nx, lowest_ny] += sediment_amount
-        self.world_map = heightmap.astype(np.int32)
+        return heightmap
 
+    def _apply_erosion(self, erosion_passes):
+        if erosion_passes <= 0: return
+        
+        if self.progress_callback: self.progress_callback(30, "Applying erosion...")
+        
+        heightmap = self.world_map.astype(np.float32)
+        
+        # Call the new Numba-optimized function
+        self.world_map = self._numba_apply_erosion(heightmap, self.x_range, self.y_range, erosion_passes).astype(np.int32)
+                
     def _apply_biomes(self, land_mask, land_min, land_max):
         if self.progress_callback: self.progress_callback(50, "Applying biomes: Calculating moisture...")
         # Temperature is based on latitude (y-axis) and altitude
@@ -132,18 +262,11 @@ class FractalWorldGenerator:
         temperature = latitude_temp - (altitude_norm * altitude_temp_effect)
         temperature = np.clip(temperature, 0, 1)
 
-        # Moisture is based on simplex noise
-        moisture = np.zeros_like(self.world_map, dtype=np.float32)
-        scale = 3.0
-        for y in range(self.y_range):
-            if self.progress_callback and y % 20 == 0:
-                self.progress_callback(50 + int(20 * (y / self.y_range)), "Applying biomes: Calculating moisture...")
-            for x in range(self.x_range):
-                angle = 2 * math.pi * (x / self.x_range)
-                nx = (1 / (2*math.pi)) * scale * math.cos(angle)
-                nz = (1 / (2*math.pi)) * scale * math.sin(angle)
-                ny = y / (self.y_range/2) * scale
-                moisture[x,y] = self.moisture_noise.fractal_noise3(nx, ny, nz, 5, 0.5, 2.0)
+        # OPTIMIZATION: Generate moisture map using the JIT-compiled function
+        moisture = self._numba_generate_noise_map(
+            self.x_range, self.y_range, self.moisture_perm, self.moisture_grad3,
+            scale=3.0, octaves=5, persistence=0.5, lacunarity=2.0
+        )
         moisture = (moisture - np.min(moisture)) / (np.max(moisture) - np.min(moisture))
 
         if self.progress_callback: self.progress_callback(70, "Applying biomes: Classifying biomes...")
@@ -171,17 +294,11 @@ class FractalWorldGenerator:
         if percent_ice <= 0: return
         if self.progress_callback: self.progress_callback(80, "Applying ice caps: Calculating noise...")
 
-        noise_map = np.zeros((self.x_range, self.y_range))
-        scale = 4.0
-        for y in range(self.y_range):
-            if self.progress_callback and y % 20 == 0:
-                self.progress_callback(80 + int(10 * (y/self.y_range)), "Applying ice caps: Calculating noise...")
-            for x in range(self.x_range):
-                angle = 2 * math.pi * (x / self.x_range)
-                nx = (1 / (2*math.pi)) * scale * math.cos(angle)
-                nz = (1 / (2*math.pi)) * scale * math.sin(angle)
-                ny = y / (self.y_range/2) * scale
-                noise_map[x, y] = self.ice_noise.fractal_noise3(nx, ny, nz, 6, 0.5, 2.0)
+        # OPTIMIZATION: Generate ice noise map using the JIT-compiled function
+        noise_map = self._numba_generate_noise_map(
+            self.x_range, self.y_range, self.ice_perm, self.ice_grad3,
+            scale=4.0, octaves=6, persistence=0.5, lacunarity=2.0
+        )
         noise_map = (noise_map - np.min(noise_map)) / (np.max(noise_map) - np.min(noise_map))
 
         if self.progress_callback: self.progress_callback(90, "Applying ice caps: Forming ice...")
