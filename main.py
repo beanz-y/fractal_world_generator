@@ -56,12 +56,13 @@ class App(tk.Tk):
             'rotation_x': tk.DoubleVar(value=0.0),
             'rotation_y': tk.DoubleVar(value=0.0),
             'faults': tk.IntVar(value=200),
+            'erosion': tk.IntVar(value=5),
             'water': tk.DoubleVar(value=60.0),
             'ice': tk.DoubleVar(value=15.0),
-            'erosion': tk.IntVar(value=5),
             'altitude_temp_effect': tk.DoubleVar(value=0.5),
-            'wind_direction': tk.StringVar(value='West to East'), # New parameter for wind
+            'wind_direction': tk.StringVar(value='West to East'), 
             'simulation_event': tk.StringVar(value='Ice Age Cycle'),
+            'simulation_speed': tk.StringVar(value='Realistic (Ease In/Out)'),
             'simulation_frames': tk.IntVar(value=20),
             'hex_grid_visible': tk.BooleanVar(value=False),
             'hex_grid_size': tk.IntVar(value=50),
@@ -136,33 +137,24 @@ class App(tk.Tk):
         self.palette_combobox.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=(0,10)); row += 1
         self.palette_combobox.bind("<<ComboboxSelected>>", self.apply_predefined_palette)
         
-        # ... (Rest of the controls: Sim, Overlay, Placemark, etc.)
-        # This part is unchanged, so I'll omit it for brevity.
-        # Just ensure the new frames above are placed correctly.
-        
         sim_frame = ttk.Labelframe(self.controls_frame, text="Age Simulator")
         sim_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
-        sim_top_frame = ttk.Frame(sim_frame)
-        sim_top_frame.pack(fill=tk.X, padx=5, pady=5)
-        ttk.Label(sim_top_frame, text="Event:").pack(side=tk.LEFT)
-        event_combo = ttk.Combobox(sim_top_frame, textvariable=self.params['simulation_event'], values=['Ice Age Cycle'], state="readonly")
-        event_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        sim_frame.grid_columnconfigure(1, weight=1)
+
+        sf_row = 0
+        ttk.Label(sim_frame, text="Event:").grid(row=sf_row, column=0, sticky='w', padx=5)
+        event_combo = ttk.Combobox(sim_frame, textvariable=self.params['simulation_event'], values=['Ice Age Cycle'], state="readonly")
+        event_combo.grid(row=sf_row, column=1, columnspan=2, sticky='ew', padx=5); sf_row += 1
         
-        sim_middle_frame = ttk.Frame(sim_frame)
-        sim_middle_frame.pack(fill=tk.X, padx=5, pady=2)
-        ttk.Label(sim_middle_frame, text="Thaw Ice Seed:").pack(side=tk.LEFT, padx=(5,0))
-        thaw_entry = ttk.Entry(sim_middle_frame, textvariable=self.params['thaw_ice_seed'], width=10)
-        thaw_entry.pack(side=tk.LEFT, padx=5)
-        thaw_random_button = ttk.Button(sim_middle_frame, text="🎲", width=3, command=lambda: self.params['thaw_ice_seed'].set(random.randint(0, 100000)))
-        thaw_random_button.pack(side=tk.LEFT)
+        ttk.Label(sim_frame, text="Speed:").grid(row=sf_row, column=0, sticky='w', padx=5)
+        speed_combo = ttk.Combobox(sim_frame, textvariable=self.params['simulation_speed'], values=['Linear', 'Realistic (Ease In/Out)'], state="readonly")
+        speed_combo.grid(row=sf_row, column=1, columnspan=2, sticky='ew', padx=5); sf_row += 1
+
+        self._create_entry_widget("Thaw Ice Seed:", self.params['thaw_ice_seed'], sf_row, include_random_button=True, master=sim_frame); sf_row += 1
+        self._create_entry_widget("Frames:", self.params['simulation_frames'], sf_row, master=sim_frame); sf_row += 1
         
-        sim_bottom_frame = ttk.Frame(sim_frame)
-        sim_bottom_frame.pack(fill=tk.X, padx=5, pady=5)
-        ttk.Label(sim_bottom_frame, text="Frames:").pack(side=tk.LEFT)
-        frames_entry = ttk.Entry(sim_bottom_frame, textvariable=self.params['simulation_frames'], width=5)
-        frames_entry.pack(side=tk.LEFT, padx=5)
-        self.run_sim_button = ttk.Button(sim_bottom_frame, text="Run Simulation", command=self.start_age_simulation, state=tk.DISABLED)
-        self.run_sim_button.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.run_sim_button = ttk.Button(sim_frame, text="Run Simulation", command=self.start_age_simulation, state=tk.DISABLED)
+        self.run_sim_button.grid(row=sf_row, column=0, columnspan=3, sticky='ew', padx=5, pady=5)
         
         overlay_frame = ttk.Labelframe(self.controls_frame, text="Overlay Tools")
         overlay_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
@@ -217,7 +209,11 @@ class App(tk.Tk):
         self.next_frame_button = ttk.Button(frame_nav_frame, text="Next >", command=self.show_next_frame, state=tk.DISABLED)
         self.next_frame_button.pack(side=tk.LEFT, padx=5)
         self.on_projection_change()
-        # ... Rest of the file is identical to your latest version ...
+
+    def ease_in_out_cubic(self, x):
+        """Non-linear animation timing function."""
+        return 4 * x * x * x if x < 0.5 else 1 - pow(-2 * x + 2, 3) / 2
+
     def _create_entry_widget(self, label_text, var, row, include_random_button=False, master=None):
         if master is None: master = self.controls_frame
         ttk.Label(master, text=label_text).grid(row=row, column=0, sticky='w', padx=5, pady=2)
@@ -314,10 +310,15 @@ class App(tk.Tk):
         
     def get_biome_name_from_index(self, index):
         if self.params['map_style'].get() == 'Biome':
-            if 53 <= index <= 55:
+            if 56 <= index <= 59:
+                return "Alpine Glacier"
+            if 52 <= index <= 55:
                 return "Polar Ice"
+            
             for name, props in BIOME_DEFINITIONS.items():
                 if props['idx'] <= index < props['idx'] + props.get('shades', 1):
+                    if name in ['glacier', 'alpine_glacier']: 
+                        continue
                     return name.replace('_', ' ').title()
         
         if 1 <= index <= 7: return "Water"
@@ -661,6 +662,7 @@ class App(tk.Tk):
         if event == 'Ice Age Cycle':
             peak_ice = 90.0
             peak_water = start_water - 10
+            max_temp_offset = -0.15 # Max cooling at peak ice age
             midpoint = frames / 2.0
             
             switched_to_thaw_noise = False
@@ -668,20 +670,29 @@ class App(tk.Tk):
             for i in range(frames):
                 self.update_generation_progress(int((i + 1) / frames * 100), f"Rendering frame {i+1}/{frames}...")
                 
-                if i < midpoint:
-                    progress = i / midpoint
-                    current_ice = start_ice + (peak_ice - start_ice) * progress
-                    current_water = start_water + (peak_water - start_water) * progress
+                raw_progress = (i / midpoint) if i < midpoint else ((i - midpoint) / midpoint)
+                
+                if self.params['simulation_speed'].get() == 'Realistic (Ease In/Out)':
+                    eased_progress = self.ease_in_out_cubic(raw_progress)
                 else:
+                    eased_progress = raw_progress
+
+                if i < midpoint:
+                    # Cooling phase
+                    current_ice = start_ice + (peak_ice - start_ice) * eased_progress
+                    current_water = start_water + (peak_water - start_water) * eased_progress
+                    current_temp_offset = max_temp_offset * eased_progress
+                else:
+                    # Warming phase
                     if use_separate_thaw_seed and not switched_to_thaw_noise:
                         self.generator.set_ice_seed(thaw_seed)
                         switched_to_thaw_noise = True
                     
-                    progress = (i - midpoint) / midpoint
-                    current_ice = peak_ice + (start_ice - peak_ice) * progress
-                    current_water = peak_water + (start_water - peak_water) * progress
+                    current_ice = peak_ice - (peak_ice - start_ice) * eased_progress
+                    current_water = peak_water - (peak_water - start_water) * eased_progress
+                    current_temp_offset = max_temp_offset * (1.0 - eased_progress)
 
-                self.generator.finalize_map(current_water, current_ice, self.params['map_style'].get())
+                self.generator.finalize_map(current_water, current_ice, self.params['map_style'].get(), temp_offset=current_temp_offset)
                 frame_image = self.generator.create_image()
 
                 frame_data = {

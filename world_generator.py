@@ -3,7 +3,7 @@ import random
 import math
 from PIL import Image # type: ignore
 from utils import SimplexNoise
-import numba # type: ignore
+import numba
 
 # --- Numba-Optimized Simplex Noise Functions ---
 # This section contains a JIT-compiled implementation of the Simplex Noise logic.
@@ -118,60 +118,40 @@ PREDEFINED_PALETTES = {
     ],
 }
 
-# Create a helper function for clipping scalar values that Numba can compile.
 @numba.jit(nopython=True)
 def scalar_clip(value, min_val, max_val):
-    if value < min_val:
-        return min_val
-    elif value > max_val:
-        return max_val
-    else:
-        return value
+    if value < min_val: return min_val
+    elif value > max_val: return max_val
+    else: return value
 
-# Hydraulic erosion and rain shadow simulation
-# The `parallel=True` argument is removed as the loop is inherently sequential.
-# Numba will still provide a significant speedup in nopython mode.
 @numba.jit(nopython=True)
 def _numba_simulate_rainfall(height_map, land_mask, wind_direction):
     x_range, y_range = height_map.shape
     moisture_map = np.zeros_like(height_map, dtype=np.float32)
 
-    # The outer loop can still be parallelized as each row/column is independent
     for i in numba.prange(y_range if wind_direction < 2 else x_range):
-        air_moisture = 1.0  # Reset moisture for each independent path
+        air_moisture = 1.0
         
-        # This inner loop is sequential and cannot be parallelized
         for j_iter in range((x_range if wind_direction < 2 else y_range) * 2):
-            if wind_direction == 0:  # West to East
-                x, y, px, py = j_iter % x_range, i, (j_iter - 1 + x_range) % x_range, i
-            elif wind_direction == 1:  # East to West
-                x, y, px, py = (x_range - 1 - (j_iter % x_range)), i, (x_range - 1 - ((j_iter - 1 + x_range) % x_range)), i
-            elif wind_direction == 2:  # North to South
-                x, y, px, py = i, j_iter % y_range, i, (j_iter - 1 + y_range) % y_range
-            else:  # South to North
-                x, y, px, py = i, (y_range - 1 - (j_iter % y_range)), i, (y_range - 1 - ((j_iter - 1 + y_range) % y_range))
+            if wind_direction == 0: x, y, px, py = j_iter % x_range, i, (j_iter - 1 + x_range) % x_range, i
+            elif wind_direction == 1: x, y, px, py = (x_range - 1 - (j_iter % x_range)), i, (x_range - 1 - ((j_iter - 1 + x_range) % x_range)), i
+            elif wind_direction == 2: x, y, px, py = i, j_iter % y_range, i, (j_iter - 1 + y_range) % y_range
+            else: x, y, px, py = i, (y_range - 1 - (j_iter % y_range)), i, (y_range - 1 - ((j_iter - 1 + y_range) % y_range))
 
-            is_land = land_mask[x, y]
-            
-            if not is_land:
+            if not land_mask[x, y]:
                 air_moisture = min(1.0, air_moisture + 0.05)
                 continue
 
             air_moisture += 0.002
-
             elevation_diff = height_map[x, y] - height_map[px, py]
 
-            precipitation = 0
+            precipitation = 0.015 * air_moisture
             if elevation_diff > 0:
-                lift_precipitation = elevation_diff * 12.0 * air_moisture * 0.001
-                precipitation += lift_precipitation
+                precipitation += elevation_diff * 12.0 * air_moisture * 0.001
             
-            precipitation += 0.015 * air_moisture
             precipitation = min(air_moisture, precipitation)
-            
             moisture_map[x, y] += precipitation
-            air_moisture -= precipitation
-            air_moisture = max(0, air_moisture)
+            air_moisture = max(0, air_moisture - precipitation)
 
     return moisture_map
 
@@ -291,7 +271,7 @@ class FractalWorldGenerator:
         
         self.world_map = self._numba_apply_erosion(heightmap, self.x_range, self.y_range, erosion_passes).astype(np.int32)
                 
-    def _apply_biomes(self, land_mask, land_min, land_max):
+    def _apply_biomes(self, land_mask, land_min, land_max, temp_offset=0.0):
         if self.progress_callback: self.progress_callback(50, "Applying biomes: Calculating moisture...")
         y_coords = np.arange(self.y_range)
         latitude_temp = 1.0 - (np.abs(y_coords - self.y_range / 2.0) / (self.y_range / 2.0))
@@ -300,6 +280,9 @@ class FractalWorldGenerator:
         altitude_temp_effect = self.params.get('altitude_temp_effect', 0.5)
         
         temperature = np.tile(latitude_temp, (self.x_range, 1)) - (altitude_norm * altitude_temp_effect)
+        
+        # Apply the global temperature offset for simulations
+        temperature -= temp_offset
         temperature = np.clip(temperature, 0, 1)
 
         base_moisture = self._numba_generate_noise_map(
@@ -361,9 +344,6 @@ class FractalWorldGenerator:
                 color_indices = base_color + np.floor(biome_altitudes * (num_shades - 0.01))
                 self.color_map[biome_mask] = color_indices.astype(np.uint8)
         
-        # --- Final catch-all for any uncolored land ---
-        # Any land that didn't match a biome is likely very high, cold rock.
-        # Color it using the Tundra/Rock palette to prevent black spots.
         uncolored_land_mask = (self.color_map == 0) & land_mask
         if np.any(uncolored_land_mask):
             tundra_props = BIOME_DEFINITIONS['tundra']
@@ -391,7 +371,6 @@ class FractalWorldGenerator:
 
         ice_score_map = (1.2 * latitude_factor) + (0.4 * noise_map)
         
-        # Mask now includes all land, ensuring black spots can be covered by ice
         valid_pixels_mask = (self.color_map != 0)
 
         if not np.any(valid_pixels_mask): return
@@ -449,7 +428,7 @@ class FractalWorldGenerator:
         if self.progress_callback: self.progress_callback(100, "Done.")
         return self.pil_image
 
-    def finalize_map(self, percent_water, percent_ice, map_style):
+    def finalize_map(self, percent_water, percent_ice, map_style, temp_offset=0.0):
         min_z, max_z = np.min(self.world_map), np.max(self.world_map)
         if max_z == min_z: max_z = min_z + 1
 
@@ -476,7 +455,7 @@ class FractalWorldGenerator:
         if land_max == land_min: land_max = land_min + 1
         
         if map_style == 'Biome':
-            self._apply_biomes(land_mask, land_min, land_max)
+            self._apply_biomes(land_mask, land_min, land_max, temp_offset)
         else: # Terrain style
             normalized_altitude = (self.world_map[land_mask] - land_min) / (land_max - land_min)
             self.color_map[land_mask] = 16 + np.floor(15.99 * normalized_altitude)
@@ -493,4 +472,5 @@ class FractalWorldGenerator:
         for i, color in enumerate(self.palette):
             mask = clipped_color_map.T == i
             rgb_map[mask] = color
+            
         return Image.fromarray(rgb_map, 'RGB')
