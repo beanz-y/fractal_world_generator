@@ -68,11 +68,11 @@ def _fractal_noise3_jit(x, y, z, perm, grad3, octaves, persistence, lacunarity):
         frequency *= lacunarity
     return total / max_value if max_value > 0 else 0
 
-# New Biome Definitions based on Whittaker model
-# Ranges are for (temperature, moisture) from 0.0 to 1.0
-# 'idx' is the base color index, 'shades' is the number of colors for altitude shading
+# --- Updated Biome Definitions ---
+# Added a new 'alpine_glacier' biome and a new color range for it.
 BIOME_DEFINITIONS = {
     'glacier':              {'idx': 52, 'shades': 4, 'temp_range': (0.0, 0.125), 'moist_range': (0.0, 1.0)},
+    'alpine_glacier':       {'idx': 56, 'shades': 4, 'temp_range': (0.0, 0.15), 'moist_range': (0.0, 1.0)}, # New biome
     'tundra':               {'idx': 48, 'shades': 4, 'temp_range': (0.125, 0.25), 'moist_range': (0.0, 1.0)},
     'taiga':                {'idx': 40, 'shades': 8, 'temp_range': (0.25, 0.5), 'moist_range': (0.0, 0.33)},
     'shrubland':            {'idx': 24, 'shades': 4, 'temp_range': (0.25, 0.5), 'moist_range': (0.33, 0.66)},
@@ -83,7 +83,6 @@ BIOME_DEFINITIONS = {
     'temperate_rainforest': {'idx': 34, 'shades': 4, 'temp_range': (0.5, 0.75), 'moist_range': (0.66, 1.0)},
     'tropical_rainforest':  {'idx': 35, 'shades': 4, 'temp_range': (0.75, 1.0), 'moist_range': (0.33, 1.0)},
 }
-
 
 PREDEFINED_PALETTES = {
     "Biome": [
@@ -102,6 +101,8 @@ PREDEFINED_PALETTES = {
         (136,136,136), (150,150,150), (164,164,164), (178,178,178),
         # Glacier / Polar Ice (52-55)
         (255,255,255), (245,245,245), (235,235,235), (225,225,225),
+        # New: Alpine Glacier (56-59) - A slightly bluer, icier white
+        (220, 230, 240), (210, 220, 230), (200, 210, 220), (190, 200, 210),
     ],
     "Default": [
         (0,0,0), (0,0,68), (0,17,102), (0,51,136), (0,85,170), (0,119,187),
@@ -117,7 +118,7 @@ PREDEFINED_PALETTES = {
     ],
 }
 
-# FIX: Create a helper function for clipping scalar values that Numba can compile.
+# Create a helper function for clipping scalar values that Numba can compile.
 @numba.jit(nopython=True)
 def scalar_clip(value, min_val, max_val):
     if value < min_val:
@@ -126,6 +127,53 @@ def scalar_clip(value, min_val, max_val):
         return max_val
     else:
         return value
+
+# Hydraulic erosion and rain shadow simulation
+# The `parallel=True` argument is removed as the loop is inherently sequential.
+# Numba will still provide a significant speedup in nopython mode.
+@numba.jit(nopython=True)
+def _numba_simulate_rainfall(height_map, land_mask, wind_direction):
+    x_range, y_range = height_map.shape
+    moisture_map = np.zeros_like(height_map, dtype=np.float32)
+
+    # The outer loop can still be parallelized as each row/column is independent
+    for i in numba.prange(y_range if wind_direction < 2 else x_range):
+        air_moisture = 1.0  # Reset moisture for each independent path
+        
+        # This inner loop is sequential and cannot be parallelized
+        for j_iter in range((x_range if wind_direction < 2 else y_range) * 2):
+            if wind_direction == 0:  # West to East
+                x, y, px, py = j_iter % x_range, i, (j_iter - 1 + x_range) % x_range, i
+            elif wind_direction == 1:  # East to West
+                x, y, px, py = (x_range - 1 - (j_iter % x_range)), i, (x_range - 1 - ((j_iter - 1 + x_range) % x_range)), i
+            elif wind_direction == 2:  # North to South
+                x, y, px, py = i, j_iter % y_range, i, (j_iter - 1 + y_range) % y_range
+            else:  # South to North
+                x, y, px, py = i, (y_range - 1 - (j_iter % y_range)), i, (y_range - 1 - ((j_iter - 1 + y_range) % y_range))
+
+            is_land = land_mask[x, y]
+            
+            if not is_land:
+                air_moisture = min(1.0, air_moisture + 0.05)
+                continue
+
+            air_moisture += 0.002
+
+            elevation_diff = height_map[x, y] - height_map[px, py]
+
+            precipitation = 0
+            if elevation_diff > 0:
+                lift_precipitation = elevation_diff * 12.0 * air_moisture * 0.001
+                precipitation += lift_precipitation
+            
+            precipitation += 0.015 * air_moisture
+            precipitation = min(air_moisture, precipitation)
+            
+            moisture_map[x, y] += precipitation
+            air_moisture -= precipitation
+            air_moisture = max(0, air_moisture)
+
+    return moisture_map
 
 class FractalWorldGenerator:
     def __init__(self, params, palette, progress_callback=None):
@@ -142,7 +190,6 @@ class FractalWorldGenerator:
         self.ice_noise = SimplexNoise(seed=ice_seed)
         self.moisture_noise = SimplexNoise(seed=moisture_seed)
         
-        # OPTIMIZATION: Prepare noise data for Numba
         self.moisture_perm = np.array(self.moisture_noise.perm, dtype=np.int64)
         self.moisture_grad3 = np.array(self.moisture_noise.grad3, dtype=np.float64)
         self.ice_perm = np.array(self.ice_noise.perm, dtype=np.int64)
@@ -156,28 +203,19 @@ class FractalWorldGenerator:
         self.color_map_before_ice = None
 
     def set_ice_seed(self, seed):
-        """
-        Updates the ice noise generator with a new seed.
-        This is used for simulations where the ice noise pattern needs to change dynamically.
-        """
-        # Re-initialize the SimplexNoise object to get a new permutation table
         self.ice_noise = SimplexNoise(seed=seed)
-        # Then, update the numpy arrays that are passed to the Numba-compiled functions
         self.ice_perm = np.array(self.ice_noise.perm, dtype=np.int64)
         self.ice_grad3 = np.array(self.ice_noise.grad3, dtype=np.float64)
 
-    # OPTIMIZATION: JIT-compiled function to generate a complete noise map in parallel
     @staticmethod
     @numba.jit(nopython=True, parallel=True, fastmath=True)
     def _numba_generate_noise_map(x_range, y_range, perm, grad3, scale, octaves, persistence, lacunarity):
         noise_map = np.empty((x_range, y_range), dtype=np.float32)
         
-        # Constants for coordinate calculation
         two_pi = 2 * np.pi
         inv_two_pi = 1 / two_pi
         y_scale_factor = 2 / y_range if y_range > 0 else 0
 
-        # Use numba.prange for a parallelized for-loop
         for y in numba.prange(y_range):
             for x in range(x_range):
                 angle = two_pi * (x / x_range)
@@ -187,11 +225,9 @@ class FractalWorldGenerator:
                 noise_map[x, y] = _fractal_noise3_jit(nx, ny, nz, perm, grad3, octaves, persistence, lacunarity)
         return noise_map
 
-    # This is a new helper method that will be JIT-compiled
     @staticmethod
     @numba.jit(nopython=True)
     def _numba_add_fault_line(world_map, x_range, y_range, y_range_div_pi, y_range_div_2, sin_iter_phi, flag1, beta, alpha):
-        # FIX: Use the custom scalar_clip function instead of np.clip
         cos_val = np.cos(alpha) * np.cos(beta)
         clipped_cos = scalar_clip(cos_val, -1.0, 1.0)
         tan_b = np.tan(np.arccos(clipped_cos))
@@ -204,7 +240,7 @@ class FractalWorldGenerator:
             theta = int((y_range_div_pi * np.arctan(sin_val * tan_b)) + y_range_div_2)
             theta = max(0, min(y_range - 1, theta))
             
-            if world_map[phi, theta] == -2147483648: # INT_MIN_PLACEHOLDER
+            if world_map[phi, theta] == -2147483648:
                 world_map[phi, theta] = delta
             else:
                 world_map[phi, theta] += delta
@@ -214,7 +250,6 @@ class FractalWorldGenerator:
         flag1 = random.randint(0, 1)
         alpha, beta = (random.random() - 0.5) * np.pi, (random.random() - 0.5) * np.pi
         
-        # Call the new JIT-compiled method
         self.world_map = self._numba_add_fault_line(
             self.world_map, self.x_range, self.y_range, 
             self.y_range_div_pi, self.y_range_div_2, 
@@ -222,7 +257,7 @@ class FractalWorldGenerator:
         )
 
     @staticmethod
-    @numba.jit(nopython=True) # Add this decorator
+    @numba.jit(nopython=True)
     def _numba_apply_erosion(heightmap, x_range, y_range, erosion_passes):
         for i in range(erosion_passes):
             source_map = heightmap.copy()
@@ -232,18 +267,15 @@ class FractalWorldGenerator:
                     lowest_neighbor_height = current_height
                     lowest_nx, lowest_ny = x, y
 
-                    # Check neighbors
                     for dy in [-1, 0, 1]:
                         for dx in [-1, 0, 1]:
-                            if dx == 0 and dy == 0:
-                                continue
+                            if dx == 0 and dy == 0: continue
                             nx, ny = (x + dx + x_range) % x_range, y + dy
                             if 0 <= ny < y_range:
                                 if source_map[nx, ny] < lowest_neighbor_height:
                                     lowest_neighbor_height = source_map[nx, ny]
                                     lowest_nx, lowest_ny = nx, ny
                     
-                    # Move sediment
                     if lowest_neighbor_height < current_height:
                         sediment_amount = (current_height - lowest_neighbor_height) * 0.1
                         heightmap[x, y] -= sediment_amount
@@ -257,55 +289,94 @@ class FractalWorldGenerator:
         
         heightmap = self.world_map.astype(np.float32)
         
-        # Call the new Numba-optimized function
         self.world_map = self._numba_apply_erosion(heightmap, self.x_range, self.y_range, erosion_passes).astype(np.int32)
                 
     def _apply_biomes(self, land_mask, land_min, land_max):
         if self.progress_callback: self.progress_callback(50, "Applying biomes: Calculating moisture...")
-        # Temperature is based on latitude (y-axis) and altitude
         y_coords = np.arange(self.y_range)
         latitude_temp = 1.0 - (np.abs(y_coords - self.y_range / 2.0) / (self.y_range / 2.0))
-        latitude_temp = np.tile(latitude_temp, (self.x_range, 1))
-
+        
         altitude_norm = (self.world_map - land_min) / (land_max - land_min)
         altitude_temp_effect = self.params.get('altitude_temp_effect', 0.5)
         
-        temperature = latitude_temp - (altitude_norm * altitude_temp_effect)
+        temperature = np.tile(latitude_temp, (self.x_range, 1)) - (altitude_norm * altitude_temp_effect)
         temperature = np.clip(temperature, 0, 1)
 
-        # OPTIMIZATION: Generate moisture map using the JIT-compiled function
-        moisture = self._numba_generate_noise_map(
+        base_moisture = self._numba_generate_noise_map(
             self.x_range, self.y_range, self.moisture_perm, self.moisture_grad3,
-            scale=3.0, octaves=5, persistence=0.5, lacunarity=2.0
+            scale=5.0, octaves=4, persistence=0.5, lacunarity=2.0
         )
-        moisture = (moisture - np.min(moisture)) / (np.max(moisture) - np.min(moisture))
+        base_moisture = (base_moisture - np.min(base_moisture)) / (np.max(base_moisture) - np.min(base_moisture))
+        
+        wind_direction_str = self.params.get('wind_direction', 'West to East')
+        wind_map = {'West to East': 0, 'East to West': 1, 'North to South': 2, 'South to North': 3}
+        wind_direction_code = wind_map.get(wind_direction_str, 0)
+        simulated_moisture = _numba_simulate_rainfall(self.world_map, land_mask, wind_direction_code)
+        
+        max_sim_moisture = np.max(simulated_moisture)
+        if max_sim_moisture > 0:
+            simulated_moisture /= max_sim_moisture
+            
+        moisture = (base_moisture * 0.4) + (simulated_moisture * 0.6)
+        
+        max_total_moisture = np.max(moisture)
+        if max_total_moisture > 0:
+            moisture /= max_total_moisture
 
         if self.progress_callback: self.progress_callback(70, "Applying biomes: Classifying biomes...")
-        # Classify and color biomes
+
+        lat_factor = np.abs(y_coords - self.y_range / 2.0) / (self.y_range / 2.0)
+        non_polar_mask = (lat_factor < 0.85)
+        
+        alpine_props = BIOME_DEFINITIONS['alpine_glacier']
+        alpine_mask = (altitude_norm > 0.7) & \
+                      (temperature < alpine_props['temp_range'][1]) & \
+                      land_mask & \
+                      np.tile(non_polar_mask, (self.x_range, 1))
+
+        if np.any(alpine_mask):
+            base_color = alpine_props['idx']
+            num_shades = alpine_props.get('shades', 1)
+            alpine_altitudes = altitude_norm[alpine_mask]
+            color_indices = base_color + np.floor(alpine_altitudes * (num_shades - 0.01))
+            self.color_map[alpine_mask] = color_indices.astype(np.uint8)
+
+        remaining_land_mask = land_mask & ~alpine_mask
+        
         for name, props in BIOME_DEFINITIONS.items():
+            if name == 'alpine_glacier' or name == 'glacier':
+                continue
+
             t_min, t_max = props['temp_range']
             m_min, m_max = props['moist_range']
             
             biome_mask = (temperature >= t_min) & (temperature < t_max) & \
                          (moisture >= m_min) & (moisture < m_max) & \
-                         land_mask
+                         remaining_land_mask
 
             if np.any(biome_mask):
                 base_color = props['idx']
                 num_shades = props.get('shades', 1)
-                
                 biome_altitudes = altitude_norm[biome_mask]
-                
                 color_indices = base_color + np.floor(biome_altitudes * (num_shades - 0.01))
-                
                 self.color_map[biome_mask] = color_indices.astype(np.uint8)
-
+        
+        # --- Final catch-all for any uncolored land ---
+        # Any land that didn't match a biome is likely very high, cold rock.
+        # Color it using the Tundra/Rock palette to prevent black spots.
+        uncolored_land_mask = (self.color_map == 0) & land_mask
+        if np.any(uncolored_land_mask):
+            tundra_props = BIOME_DEFINITIONS['tundra']
+            base_color = tundra_props['idx']
+            num_shades = tundra_props.get('shades', 1)
+            uncolored_altitudes = altitude_norm[uncolored_land_mask]
+            color_indices = base_color + np.floor(uncolored_altitudes * (num_shades - 0.01))
+            self.color_map[uncolored_land_mask] = color_indices.astype(np.uint8)
 
     def _apply_ice_caps(self, percent_ice):
         if percent_ice <= 0: return
         if self.progress_callback: self.progress_callback(80, "Applying ice caps: Calculating noise...")
 
-        # OPTIMIZATION: Generate ice noise map using the JIT-compiled function
         noise_map = self._numba_generate_noise_map(
             self.x_range, self.y_range, self.ice_perm, self.ice_grad3,
             scale=4.0, octaves=6, persistence=0.5, lacunarity=2.0
@@ -320,8 +391,11 @@ class FractalWorldGenerator:
 
         ice_score_map = (1.2 * latitude_factor) + (0.4 * noise_map)
         
-        valid_pixels_mask = self.color_map > 0
+        # Mask now includes all land, ensuring black spots can be covered by ice
+        valid_pixels_mask = (self.color_map != 0)
+
         if not np.any(valid_pixels_mask): return
+
         ice_threshold = np.percentile(ice_score_map[valid_pixels_mask], 100 - percent_ice)
         ice_mask = (ice_score_map >= ice_threshold) & valid_pixels_mask
         if not np.any(ice_mask): return
@@ -330,8 +404,8 @@ class FractalWorldGenerator:
         min_ice_alt, max_ice_alt = np.min(ice_altitudes), np.max(ice_altitudes)
         if max_ice_alt == min_ice_alt: max_ice_alt = min_ice_alt + 1
         
-        ice_base_color_start = 53
-        ice_num_base_colors = 3
+        ice_base_color_start = BIOME_DEFINITIONS['glacier']['idx']
+        ice_num_base_colors = BIOME_DEFINITIONS['glacier']['shades']
         
         original_colors_under_ice = self.color_map[ice_mask]
         
@@ -341,7 +415,7 @@ class FractalWorldGenerator:
         terrain_modifier = (original_colors_under_ice % 2)
         final_ice_colors = base_ice_colors - terrain_modifier
         
-        self.color_map[ice_mask] = final_ice_colors
+        self.color_map[ice_mask] = final_ice_colors.astype(np.uint8)
     
     def generate(self):
         if self.progress_callback: self.progress_callback(0, "Generating faults...")

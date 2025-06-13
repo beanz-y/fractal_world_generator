@@ -60,6 +60,7 @@ class App(tk.Tk):
             'ice': tk.DoubleVar(value=15.0),
             'erosion': tk.IntVar(value=5),
             'altitude_temp_effect': tk.DoubleVar(value=0.5),
+            'wind_direction': tk.StringVar(value='West to East'), # New parameter for wind
             'simulation_event': tk.StringVar(value='Ice Age Cycle'),
             'simulation_frames': tk.IntVar(value=20),
             'hex_grid_visible': tk.BooleanVar(value=False),
@@ -79,15 +80,36 @@ class App(tk.Tk):
         row = 0
         self.controls_frame.grid_columnconfigure(1, weight=1)
 
-        self._create_entry_widget("Width:", self.params['width'], row); row += 1
-        self._create_entry_widget("Height:", self.params['height'], row); row += 1
-        self._create_entry_widget("Seed:", self.params['seed'], row, include_random_button=True); row += 1
-        self._create_entry_widget("Ice Seed:", self.params['ice_seed'], row, include_random_button=True); row += 1
-        self._create_entry_widget("Moisture Seed:", self.params['moisture_seed'], row, include_random_button=True); row += 1
+        # --- Generation Parameters ---
+        gen_frame = ttk.Labelframe(self.controls_frame, text="Generation")
+        gen_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
+        gen_frame.grid_columnconfigure(1, weight=1)
         
-        ttk.Separator(self.controls_frame, orient='horizontal').grid(row=row, columnspan=3, sticky='ew', pady=10); row += 1
+        g_row = 0
+        self._create_entry_widget("Width:", self.params['width'], g_row, master=gen_frame); g_row += 1
+        self._create_entry_widget("Height:", self.params['height'], g_row, master=gen_frame); g_row += 1
+        self._create_entry_widget("Seed:", self.params['seed'], g_row, include_random_button=True, master=gen_frame); g_row += 1
+        self._create_entry_widget("Ice Seed:", self.params['ice_seed'], g_row, include_random_button=True, master=gen_frame); g_row += 1
+        self._create_slider_widget("Faults:", self.params['faults'], 1, 2000, g_row, master=gen_frame); g_row += 1
+        self._create_slider_widget("Erosion:", self.params['erosion'], 0, 50, g_row, master=gen_frame); g_row += 1
         
-        view_frame = ttk.Labelframe(self.controls_frame, text="View Style")
+        # --- Climate Parameters ---
+        climate_frame = ttk.Labelframe(self.controls_frame, text="Climate")
+        climate_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
+        climate_frame.grid_columnconfigure(1, weight=1)
+        
+        c_row = 0
+        self._create_slider_widget("Water %:", self.params['water'], 0, 100, c_row, master=climate_frame); c_row += 1
+        self._create_slider_widget("Ice %:", self.params['ice'], 0, 100, c_row, master=climate_frame); c_row += 1
+        self._create_slider_widget("Altitude Temp. Effect:", self.params['altitude_temp_effect'], 0, 1, c_row, master=climate_frame); c_row += 1
+
+        ttk.Label(climate_frame, text="Wind Direction:").grid(row=c_row, column=0, columnspan=2, sticky='w', padx=5); c_row += 1
+        wind_combo = ttk.Combobox(climate_frame, textvariable=self.params['wind_direction'], 
+                                  values=['West to East', 'East to West', 'North to South', 'South to North'], state="readonly")
+        wind_combo.grid(row=c_row, column=0, columnspan=2, sticky='ew', padx=5, pady=(0,5)); c_row += 1
+
+        # --- View and Display ---
+        view_frame = ttk.Labelframe(self.controls_frame, text="Display")
         view_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
         
         style_frame = ttk.Frame(view_frame); style_frame.pack(fill=tk.X, padx=5, pady=2)
@@ -103,23 +125,21 @@ class App(tk.Tk):
         self.rotation_frame = ttk.Labelframe(self.controls_frame, text="Globe Rotation")
         self.rotation_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
         self._create_slider_widget("Yaw:", self.params['rotation_y'], -180, 180, 0, master=self.rotation_frame)
-        self._create_slider_widget("Pitch:", self.params['rotation_x'], -90, 90, 2, master=self.rotation_frame)
+        self._create_slider_widget("Pitch:", self.params['rotation_x'], -90, 90, 1, master=self.rotation_frame)
         
         self.params['rotation_y'].trace_add('write', lambda *_: self.redraw_canvas())
         self.params['rotation_x'].trace_add('write', lambda *_: self.redraw_canvas())
-
-        self._create_slider_widget("Faults:", self.params['faults'], 1, 1000, row); row += 1
-        self._create_slider_widget("Water %:", self.params['water'], 0, 100, row); row += 1
-        self._create_slider_widget("Ice %:", self.params['ice'], 0, 100, row); row += 1
-        self._create_slider_widget("Erosion:", self.params['erosion'], 0, 50, row); row += 1
-        self._create_slider_widget("Altitude Temp. Effect:", self.params['altitude_temp_effect'], 0, 1, row); row += 1
         
         ttk.Label(self.controls_frame, text="Preset Palettes:").grid(row=row, column=0, columnspan=3, sticky='w', padx=5); row += 1
         self.palette_combobox = ttk.Combobox(self.controls_frame, values=list(PREDEFINED_PALETTES.keys()), state="readonly")
         self.palette_combobox.set("Biome")
         self.palette_combobox.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=(0,10)); row += 1
         self.palette_combobox.bind("<<ComboboxSelected>>", self.apply_predefined_palette)
-
+        
+        # ... (Rest of the controls: Sim, Overlay, Placemark, etc.)
+        # This part is unchanged, so I'll omit it for brevity.
+        # Just ensure the new frames above are placed correctly.
+        
         sim_frame = ttk.Labelframe(self.controls_frame, text="Age Simulator")
         sim_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
         sim_top_frame = ttk.Frame(sim_frame)
@@ -196,15 +216,15 @@ class App(tk.Tk):
         self.frame_label.pack(side=tk.LEFT, padx=5)
         self.next_frame_button = ttk.Button(frame_nav_frame, text="Next >", command=self.show_next_frame, state=tk.DISABLED)
         self.next_frame_button.pack(side=tk.LEFT, padx=5)
-
         self.on_projection_change()
-
-    def _create_entry_widget(self, label_text, var, row, include_random_button=False):
-        ttk.Label(self.controls_frame, text=label_text).grid(row=row, column=0, sticky='w', padx=5, pady=2)
-        entry = ttk.Entry(self.controls_frame, textvariable=var, width=10)
+        # ... Rest of the file is identical to your latest version ...
+    def _create_entry_widget(self, label_text, var, row, include_random_button=False, master=None):
+        if master is None: master = self.controls_frame
+        ttk.Label(master, text=label_text).grid(row=row, column=0, sticky='w', padx=5, pady=2)
+        entry = ttk.Entry(master, textvariable=var, width=10)
         entry.grid(row=row, column=1, sticky='ew', padx=5)
         if include_random_button:
-            button = ttk.Button(self.controls_frame, text="🎲", width=3, command=lambda v=var: v.set(random.randint(0, 100000)))
+            button = ttk.Button(master, text="🎲", width=3, command=lambda v=var: v.set(random.randint(0, 100000)))
             button.grid(row=row, column=2, sticky='w')
         
     def _create_slider_widget(self, label_text, var, from_, to, row, master=None):
@@ -633,7 +653,6 @@ class App(tk.Tk):
         start_water = self.params['water'].get()
         start_ice = self.params['ice'].get()
         
-        # Store original seed to restore it later
         original_ice_seed = self.params['ice_seed'].get()
         thaw_seed = self.params['thaw_ice_seed'].get()
         
@@ -654,9 +673,8 @@ class App(tk.Tk):
                     current_ice = start_ice + (peak_ice - start_ice) * progress
                     current_water = start_water + (peak_water - start_water) * progress
                 else:
-                    # Switch to the thaw seed at the simulation's midpoint
                     if use_separate_thaw_seed and not switched_to_thaw_noise:
-                        self.generator.set_ice_seed(thaw_seed) # Use the new method
+                        self.generator.set_ice_seed(thaw_seed)
                         switched_to_thaw_noise = True
                     
                     progress = (i - midpoint) / midpoint
@@ -680,7 +698,6 @@ class App(tk.Tk):
                 frame_image_with_overlays.save(os.path.join(save_dir, f"{base_filename}_{i+1:03d}.png"))
                 time.sleep(0.05) 
 
-        # Restore the generator's original ice seed after the simulation is done
         if use_separate_thaw_seed:
             self.generator.set_ice_seed(original_ice_seed)
         self.after(0, self.finalize_simulation)
