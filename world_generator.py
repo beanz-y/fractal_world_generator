@@ -155,6 +155,17 @@ class FractalWorldGenerator:
         self.pil_image = None
         self.color_map_before_ice = None
 
+    def set_ice_seed(self, seed):
+        """
+        Updates the ice noise generator with a new seed.
+        This is used for simulations where the ice noise pattern needs to change dynamically.
+        """
+        # Re-initialize the SimplexNoise object to get a new permutation table
+        self.ice_noise = SimplexNoise(seed=seed)
+        # Then, update the numpy arrays that are passed to the Numba-compiled functions
+        self.ice_perm = np.array(self.ice_noise.perm, dtype=np.int64)
+        self.ice_grad3 = np.array(self.ice_noise.grad3, dtype=np.float64)
+
     # OPTIMIZATION: JIT-compiled function to generate a complete noise map in parallel
     @staticmethod
     @numba.jit(nopython=True, parallel=True, fastmath=True)

@@ -13,6 +13,7 @@ import time
 from world_generator import FractalWorldGenerator, PREDEFINED_PALETTES, BIOME_DEFINITIONS
 from utils import MapTooltip, PaletteEditor
 
+# Add this line to disable the Decompression Bomb warning for very large images
 Image.MAX_IMAGE_PIXELS = None
 
 class App(tk.Tk):
@@ -632,13 +633,12 @@ class App(tk.Tk):
         start_water = self.params['water'].get()
         start_ice = self.params['ice'].get()
         
-        original_ice_noise = self.generator.ice_noise
+        # Store original seed to restore it later
+        original_ice_seed = self.params['ice_seed'].get()
         thaw_seed = self.params['thaw_ice_seed'].get()
         
-        use_separate_thaw_seed = thaw_seed != self.params['ice_seed'].get()
-        if use_separate_thaw_seed:
-            thaw_ice_noise = SimplexNoise(seed=thaw_seed)
-
+        use_separate_thaw_seed = thaw_seed != original_ice_seed
+        
         if event == 'Ice Age Cycle':
             peak_ice = 90.0
             peak_water = start_water - 10
@@ -654,8 +654,9 @@ class App(tk.Tk):
                     current_ice = start_ice + (peak_ice - start_ice) * progress
                     current_water = start_water + (peak_water - start_water) * progress
                 else:
+                    # Switch to the thaw seed at the simulation's midpoint
                     if use_separate_thaw_seed and not switched_to_thaw_noise:
-                        self.generator.ice_noise = thaw_ice_noise
+                        self.generator.set_ice_seed(thaw_seed) # Use the new method
                         switched_to_thaw_noise = True
                     
                     progress = (i - midpoint) / midpoint
@@ -679,7 +680,9 @@ class App(tk.Tk):
                 frame_image_with_overlays.save(os.path.join(save_dir, f"{base_filename}_{i+1:03d}.png"))
                 time.sleep(0.05) 
 
-        self.generator.ice_noise = original_ice_noise
+        # Restore the generator's original ice seed after the simulation is done
+        if use_separate_thaw_seed:
+            self.generator.set_ice_seed(original_ice_seed)
         self.after(0, self.finalize_simulation)
 
     def finalize_simulation(self):
