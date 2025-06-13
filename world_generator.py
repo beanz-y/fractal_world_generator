@@ -124,19 +124,55 @@ def scalar_clip(value, min_val, max_val):
     elif value > max_val: return max_val
     else: return value
 
-@numba.jit(nopython=True)
+@numba.jit(nopython=True, fastmath=True)
 def _numba_simulate_rainfall(height_map, land_mask, wind_direction):
     x_range, y_range = height_map.shape
     moisture_map = np.zeros_like(height_map, dtype=np.float32)
 
-    for i in numba.prange(y_range if wind_direction < 2 else x_range):
+    # Note: The 'parallel=True' argument was removed because the simulation loop
+    # has a sequential dependency (each step depends on the last), making it
+    # unsuitable for parallel execution. Numba still JIT-compiles this function
+    # for a significant speedup.
+    for i in range(y_range if wind_direction < 2 else x_range):
         air_moisture = 1.0
+
+        # WARM-UP PASS for horizontal winds to ensure seamless wrapping
+        if wind_direction < 2:
+            for j_iter in range(x_range):
+                if wind_direction == 0: # West to East
+                    x, y, px, py = j_iter, i, (j_iter - 1 + x_range) % x_range, i
+                else: # East to West
+                    x, y, px, py = (x_range - 1 - j_iter), i, (x_range - 1 - ((j_iter - 1 + x_range) % x_range)), i
+
+                if not land_mask[x, y]:
+                    air_moisture = min(1.0, air_moisture + 0.05)
+                    continue
+
+                air_moisture += 0.002
+                elevation_diff = height_map[x, y] - height_map[px, py]
+
+                precipitation = 0.015 * air_moisture
+                if elevation_diff > 0:
+                    precipitation += elevation_diff * 12.0 * air_moisture * 0.001
+                
+                precipitation = min(air_moisture, precipitation)
+                # No precipitation is recorded here, just updating air moisture
+                air_moisture = max(0, air_moisture - precipitation)
         
-        for j_iter in range((x_range if wind_direction < 2 else y_range) * 2):
-            if wind_direction == 0: x, y, px, py = j_iter % x_range, i, (j_iter - 1 + x_range) % x_range, i
-            elif wind_direction == 1: x, y, px, py = (x_range - 1 - (j_iter % x_range)), i, (x_range - 1 - ((j_iter - 1 + x_range) % x_range)), i
-            elif wind_direction == 2: x, y, px, py = i, j_iter % y_range, i, (j_iter - 1 + y_range) % y_range
-            else: x, y, px, py = i, (y_range - 1 - (j_iter % y_range)), i, (y_range - 1 - ((j_iter - 1 + y_range) % y_range))
+        # RECORDING PASS for all wind directions
+        loop_len = x_range if wind_direction < 2 else y_range
+        for j_iter in range(loop_len):
+            # Determine coordinates based on wind direction
+            if wind_direction == 0: # West to East
+                x, y, px, py = j_iter, i, (j_iter - 1 + x_range) % x_range, i
+            elif wind_direction == 1: # East to West
+                x, y, px, py = (x_range - 1 - j_iter), i, (x_range - 1 - ((j_iter - 1 + x_range) % x_range)), i
+            elif wind_direction == 2: # North to South
+                x, y, px, py = i, j_iter, i, j_iter - 1
+                if j_iter == 0: px, py = x, y # No previous pixel
+            else: # South to North
+                x, y, px, py = i, (y_range - 1 - j_iter), i, (y_range - j_iter)
+                if j_iter == 0: px, py = x, y # No previous pixel
 
             if not land_mask[x, y]:
                 air_moisture = min(1.0, air_moisture + 0.05)
@@ -150,7 +186,7 @@ def _numba_simulate_rainfall(height_map, land_mask, wind_direction):
                 precipitation += elevation_diff * 12.0 * air_moisture * 0.001
             
             precipitation = min(air_moisture, precipitation)
-            moisture_map[x, y] += precipitation
+            moisture_map[x, y] = precipitation # Set precipitation, not accumulate
             air_moisture = max(0, air_moisture - precipitation)
 
     return moisture_map
@@ -411,6 +447,8 @@ class FractalWorldGenerator:
         if self.progress_callback: self.progress_callback(25, "Calculating heightmap...")
         temp_map = self.world_map.copy()
         temp_map[temp_map == self.INT_MIN_PLACEHOLDER] = 0
+        
+        # Reverted to original heightmap generation logic
         self.world_map = np.cumsum(temp_map, axis=1)
         
         self._apply_erosion(self.params.get('erosion'))
