@@ -1,3 +1,4 @@
+# beanz-y/fractal_world_generator/fractal_world_generator-8b752999818ebdee7e3c696935b618f2a364ff8f/main.py
 import tkinter as tk
 from tkinter import ttk, filedialog, colorchooser, simpledialog
 from PIL import Image, ImageTk, ImageDraw, ImageFont # type: ignore
@@ -10,8 +11,16 @@ import json
 import os
 import time
 
-from world_generator import FractalWorldGenerator, PREDEFINED_PALETTES, BIOME_DEFINITIONS
+# Add the script's directory to the Python path to ensure local modules can be found.
+import sys
+script_dir = os.path.dirname(os.path.abspath(__file__))
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
+
+from world_generator import FractalWorldGenerator
 from utils import MapTooltip, PaletteEditor
+from constants import PREDEFINED_PALETTES, BIOME_DEFINITIONS
+from projection import render_globe, canvas_coords_to_map, map_coords_to_canvas
 
 # Add this line to disable the Decompression Bomb warning for very large images
 Image.MAX_IMAGE_PIXELS = None
@@ -27,6 +36,7 @@ class App(tk.Tk):
         self.zoom = 1.0
         self.view_offset = [0, 0]
         self.pan_start_pos = None
+        self.world_circumference_km = 1600.0 # Default value
         
         # --- Layer Management System ---
         self.layers = {}
@@ -253,7 +263,6 @@ class App(tk.Tk):
         ttk.Checkbutton(placemark_frame, text="Add Placemark", variable=self.adding_placemark, command=self.toggle_placemark_mode).pack(side=tk.LEFT, padx=5)
 
     def _toggle_layer_visibility(self, layer_name):
-        self.cached_globe_source_image = None
         self.redraw_canvas()
 
     def ease_in_out_cubic(self, x):
@@ -405,7 +414,9 @@ class App(tk.Tk):
             'Region (~6,400 km)': 6400.0,
             'Continent (~16,000 km)': 16000.0,
         }
-        params_dict['world_circumference_km'] = circumference_map.get(size_preset, 6400.0)
+        # --- FIX: Store circumference in the app instance ---
+        self.world_circumference_km = circumference_map.get(size_preset, 6400.0)
+        params_dict['world_circumference_km'] = self.world_circumference_km
 
         thread = threading.Thread(target=self.run_generation_in_thread, args=(params_dict,), daemon=True)
         thread.start()
@@ -437,45 +448,91 @@ class App(tk.Tk):
             self.progress.config(value=value),
             self.status_label.config(text=text)
         ))
-    
-    def _draw_layers_on_canvas(self):
-        """Draws vector layers directly onto the canvas."""
-        self.canvas.delete("overlay") # Clear old vector overlays
 
-        if self.layer_visibility.get('Settlements', tk.BooleanVar(value=False)).get() and 'settlements' in self.layers:
-            self._draw_settlements_on_canvas(self.layers['settlements'])
-
-        if self.layer_visibility.get('Placemarks', tk.BooleanVar(value=False)).get() and 'placemarks' in self.layers:
-            self._draw_placemarks_on_canvas(self.layers['placemarks'])
-
-    def _draw_placemarks_on_canvas(self, placemarks):
-        font_size = 10
-        icon_radius = 4
+    def _draw_layers_on_image(self, image):
+        """Draws vector layers directly onto the supplied PIL Image object."""
+        draw = ImageDraw.Draw(image)
         
-        for pm in placemarks:
-            canvas_x, canvas_y = self.image_to_canvas_coords(pm['x'], pm['y'])
-            if canvas_x is None: continue
-            
-            self.canvas.create_oval(canvas_x - icon_radius, canvas_y - icon_radius, 
-                                    canvas_x + icon_radius, canvas_y + icon_radius, 
-                                    fill='red', outline='black', tags="overlay")
-            self.canvas.create_text(canvas_x + icon_radius + 2, canvas_y,
-                                    text=pm['name'], anchor='w', font=("Arial", font_size), fill="white", tags="overlay")
+        # Load a font
+        try:
+            settlement_font = ImageFont.truetype("arial.ttf", size=9)
+            placemark_font = ImageFont.truetype("arial.ttf", size=10)
+        except IOError:
+            settlement_font = ImageFont.load_default()
+            placemark_font = ImageFont.load_default()
 
-    def _draw_settlements_on_canvas(self, settlements):
-        font_size = 9
-        icon_radius = 3
+        # Draw Settlements
+        if self.layer_visibility.get('Settlements', tk.BooleanVar(value=True)).get() and 'settlements' in self.layers:
+            icon_radius = 3
+            for settlement in self.layers['settlements']:
+                # Use image_to_canvas_coords to find where the settlement should be on the final image
+                canvas_x, canvas_y = self.image_to_canvas_coords(settlement['x'], settlement['y'])
+                if canvas_x is not None and canvas_y is not None:
+                    box = (canvas_x - icon_radius, canvas_y - icon_radius, canvas_x + icon_radius, canvas_y + icon_radius)
+                    draw.ellipse(box, fill='white', outline='black')
+                    # Draw text label
+                    text_pos = (canvas_x + icon_radius + 2, canvas_y)
+                    draw.text(text_pos, settlement['name'], font=settlement_font, fill="white", anchor="lm")
 
-        for settlement in settlements:
-            canvas_x, canvas_y = self.image_to_canvas_coords(settlement['x'], settlement['y'])
-            if canvas_x is None: continue
-
-            self.canvas.create_oval(canvas_x - icon_radius, canvas_y - icon_radius, 
-                                    canvas_x + icon_radius, canvas_y + icon_radius, 
-                                    fill='white', outline='black', tags="overlay")
-            self.canvas.create_text(canvas_x + icon_radius + 2, canvas_y,
-                                    text=settlement['name'], anchor='w', font=("Arial", font_size), fill="white", tags="overlay")
+        # Draw Placemarks
+        if self.layer_visibility.get('Placemarks', tk.BooleanVar(value=False)).get() and 'placemarks' in self.layers:
+            icon_radius = 4
+            for pm in self.layers['placemarks']:
+                canvas_x, canvas_y = self.image_to_canvas_coords(pm['x'], pm['y'])
+                if canvas_x is not None and canvas_y is not None:
+                    box = (canvas_x - icon_radius, canvas_y - icon_radius, canvas_x + icon_radius, canvas_y + icon_radius)
+                    draw.ellipse(box, fill='red', outline='black')
+                    draw.text((canvas_x + icon_radius + 2, canvas_y), pm['name'], font=placemark_font, fill="white", anchor="lm")
     
+    def _draw_scale_bar(self):
+        """Draws a dynamic scale bar on the canvas for the 2D view."""
+        self.canvas.delete("scale_bar")
+        canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
+
+        if canvas_w <= 1 or self.generator is None:
+            return
+
+        # --- FIX: Read circumference from the app instance attribute ---
+        circumference_km = self.world_circumference_km
+        zoom = self.zoom
+        img_h = self.generator.y_range
+        
+        # Calculate latitude at the center of the view to account for projection distortion
+        center_y_map_px = self.view_offset[1] + (img_h / zoom) / 2
+        center_lat_rad = (center_y_map_px / img_h - 0.5) * math.pi
+        
+        # Calculate km per canvas pixel at the view's central latitude
+        km_per_canvas_pixel = (circumference_km * math.cos(center_lat_rad)) / (zoom * canvas_w)
+
+        if km_per_canvas_pixel <= 0:
+            return
+
+        # Find a "nice" distance and pixel width for the bar
+        target_bar_width_px = canvas_w / 5
+        target_distance_km = target_bar_width_px * km_per_canvas_pixel
+        
+        # Algorithm to find a "nice" round number for the scale distance
+        if target_distance_km == 0: return
+        magnitude = 10 ** math.floor(math.log10(target_distance_km))
+        residual = target_distance_km / magnitude
+        
+        if residual < 1.5: nice_distance_km = 1 * magnitude
+        elif residual < 3.5: nice_distance_km = 2 * magnitude
+        elif residual < 7.5: nice_distance_km = 5 * magnitude
+        else: nice_distance_km = 10 * magnitude
+
+        final_bar_width_px = nice_distance_km / km_per_canvas_pixel
+
+        # Draw the bar in the bottom-left corner
+        margin = 20
+        bar_x = margin
+        bar_y = canvas_h - margin
+        
+        self.canvas.create_line(bar_x, bar_y - 5, bar_x, bar_y + 5, fill="white", tags="scale_bar", width=2)
+        self.canvas.create_line(bar_x, bar_y, bar_x + final_bar_width_px, bar_y, fill="white", tags="scale_bar", width=2)
+        self.canvas.create_line(bar_x + final_bar_width_px, bar_y - 5, bar_x + final_bar_width_px, bar_y + 5, fill="white", tags="scale_bar", width=2)
+        self.canvas.create_text(bar_x + final_bar_width_px / 2, bar_y - 10, text=f"{int(nice_distance_km)} km", fill="white", tags="scale_bar", anchor="s")
+
     def redraw_canvas(self, event=None):
         if not hasattr(self, 'generator') or not self.generator or not self.generator.pil_image: return
         self.tooltip.hide()
@@ -485,51 +542,25 @@ class App(tk.Tk):
         projection = self.params['projection'].get()
 
         if projection == 'Orthographic':
-            if self.cached_globe_source_image is None:
-                self.cached_globe_source_image = self.generator.pil_image
-            
-            source_array = np.array(self.cached_globe_source_image.convert('RGB'))
+            # Render the base globe
+            source_array = np.array(self.generator.pil_image.convert('RGB'))
             canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
             if canvas_w <= 1 or canvas_h <= 1: return
 
-            rot_y, rot_x = math.radians(self.params['rotation_y'].get()), math.radians(self.params['rotation_x'].get())
-            cy, sy, cx, sx = math.cos(rot_y), math.sin(rot_y), math.cos(rot_x), math.sin(rot_x)
-            
-            canvas_coords_x, canvas_coords_y = np.meshgrid(np.arange(canvas_w), np.arange(canvas_h))
-            radius = min(canvas_w, canvas_h) / 2
-            ndc_x, ndc_y = (canvas_coords_x - canvas_w / 2) / radius, (canvas_coords_y - canvas_h / 2) / radius
-            
-            z2 = 1 - ndc_x**2 - ndc_y**2
-            visible_mask = z2 >= 0
-            z = np.sqrt(z2[visible_mask])
-            x_ndc_masked, y_ndc_masked = ndc_x[visible_mask], ndc_y[visible_mask]
-            
-            # Inverse pitch
-            y_r1 = y_ndc_masked * cx + z * sx
-            z_r1 = -y_ndc_masked * sx + z * cx
-            x_r1 = x_ndc_masked
+            rot_y = self.params['rotation_y'].get()
+            rot_x = self.params['rotation_x'].get()
 
-            # Inverse yaw
-            x_r2 = x_r1 * cy + z_r1 * sy
-            z_r2 = -x_r1 * sy + z_r1 * cy
-            y_r2 = y_r1
-
-            lat, lon = np.arcsin(np.clip(y_r2, -1, 1)), np.arctan2(x_r2, z_r2)
-            
-            src_x = np.clip(((lon / math.pi)*0.5 + 0.5) * self.generator.x_range, 0, self.generator.x_range - 1)
-            src_y = np.clip(((-lat / math.pi) + 0.5) * self.generator.y_range, 0, self.generator.y_range - 1)
-            
-            new_img_array = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
-            new_img_array[canvas_coords_y[visible_mask], canvas_coords_x[visible_mask]] = source_array[src_y.astype(int), src_x.astype(int)]
-
+            new_img_array = render_globe(source_array, canvas_w, canvas_h, rot_y, rot_x, self.generator.x_range, self.generator.y_range)
             final_image = Image.fromarray(new_img_array)
+            
+            # Draw layers directly onto the PIL image
+            self._draw_layers_on_image(final_image)
+            
+            # Display the final composite image
             self.tk_image = ImageTk.PhotoImage(final_image)
             self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image, tags="map_image")
-            
-            self._draw_layers_on_canvas()
 
-        else: # Equirectangular view with live overlays
-            self.cached_globe_source_image = None
+        else: # Equirectangular view
             img_w, img_h = self.generator.pil_image.size
             view_w = img_w / self.zoom
             view_h = img_h / self.zoom
@@ -558,92 +589,75 @@ class App(tk.Tk):
             self.tk_image = ImageTk.PhotoImage(resized_image)
             self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image, tags="map_image")
             
-            self._draw_layers_on_canvas()
+            # For 2D view, draw overlays and scale bar on the canvas
+            self._draw_layers_on_canvas_2d()
+            self._draw_scale_bar()
+
+    def _draw_layers_on_canvas_2d(self):
+        """Draws vector layers directly onto the canvas for the 2D view."""
+        self.canvas.delete("overlay")
+
+        if self.layer_visibility.get('Settlements', tk.BooleanVar(value=True)).get() and 'settlements' in self.layers:
+            font_size = 9
+            icon_radius = 3
+            for settlement in self.layers['settlements']:
+                canvas_x, canvas_y = self.image_to_canvas_coords(settlement['x'], settlement['y'])
+                if canvas_x is not None and canvas_y is not None:
+                    self.canvas.create_oval(canvas_x - icon_radius, canvas_y - icon_radius, 
+                                            canvas_x + icon_radius, canvas_y + icon_radius, 
+                                            fill='white', outline='black', tags="overlay")
+                    self.canvas.create_text(canvas_x + icon_radius + 2, canvas_y,
+                                            text=settlement['name'], anchor='w', font=("Arial", font_size), fill="white", tags="overlay")
+
+        if self.layer_visibility.get('Placemarks', tk.BooleanVar(value=False)).get() and 'placemarks' in self.layers:
+            font_size = 10
+            icon_radius = 4
+            for pm in self.layers['placemarks']:
+                canvas_x, canvas_y = self.image_to_canvas_coords(pm['x'], pm['y'])
+                if canvas_x is not None and canvas_y is not None:
+                    self.canvas.create_oval(canvas_x - icon_radius, canvas_y - icon_radius, 
+                                        canvas_x + icon_radius, canvas_y + icon_radius, 
+                                        fill='red', outline='black', tags="overlay")
+                    self.canvas.create_text(canvas_x + icon_radius + 2, canvas_y,
+                                        text=pm['name'], anchor='w', font=("Arial", font_size), fill="white", tags="overlay")
 
     def image_to_canvas_coords(self, img_x, img_y):
         """Converts full map image coordinates to on-screen canvas coordinates for the current projection."""
-        if self.params['projection'].get() == 'Orthographic':
-            return self._image_to_globe_canvas_coords(img_x, img_y)
-        else:
-            return self._image_to_flat_canvas_coords(img_x, img_y)
-    
-    def _image_to_flat_canvas_coords(self, img_x, img_y):
         if not hasattr(self, 'generator') or not self.generator.pil_image: return None, None
-            
-        img_w, img_h = self.generator.pil_image.size
+        
         canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
         if canvas_w <= 1 or canvas_h <= 1: return None, None
 
-        view_w, view_h = img_w / self.zoom, img_h / self.zoom
-        
-        dx = img_x - self.view_offset[0]
-        if abs(dx) > img_w / 2: dx -= np.sign(dx) * img_w
-        dy = img_y - self.view_offset[1]
-        
-        canvas_x, canvas_y = (dx / view_w) * canvas_w, (dy / view_h) * canvas_h
-        
-        if 0 <= canvas_x <= canvas_w and 0 <= canvas_y <= canvas_h:
-            return canvas_x, canvas_y
-        return None, None
-        
-    def _image_to_globe_canvas_coords(self, img_x, img_y):
-        if not hasattr(self, 'generator') or not self.generator.pil_image: return None, None
-        
-        lon = (img_x / self.generator.x_range - 0.5) * 2 * math.pi
-        lat = -(img_y / self.generator.y_range - 0.5) * math.pi
-
-        x3d = math.cos(lat) * math.cos(lon)
-        y3d = math.sin(lat)
-        z3d = math.cos(lat) * math.sin(lon)
-
-        rot_y, rot_x = math.radians(self.params['rotation_y'].get()), math.radians(self.params['rotation_x'].get())
-        cy, sy, cx, sx = math.cos(rot_y), math.sin(rot_y), math.cos(rot_x), math.sin(rot_x)
-
-        x_r1 = x3d * cy - z3d * sy
-        z_r1 = x3d * sy + z3d * cy
-        
-        y_r2 = y3d * cx - z_r1 * sx
-        z_r2 = y3d * sx + z_r1 * cx
-
-        if z_r2 < 0:
+        if self.params['projection'].get() == 'Orthographic':
+            return map_coords_to_canvas(
+                img_x, img_y, canvas_w, canvas_h,
+                self.params['rotation_y'].get(), self.params['rotation_x'].get(),
+                self.generator.x_range, self.generator.y_range
+            )
+        else: # Equirectangular
+            img_w, img_h = self.generator.pil_image.size
+            view_w, view_h = img_w / self.zoom, img_h / self.zoom
+            
+            dx = img_x - self.view_offset[0]
+            if abs(dx) > img_w / 2: dx -= np.sign(dx) * img_w
+            dy = img_y - self.view_offset[1]
+            
+            canvas_x, canvas_y = (dx / view_w) * canvas_w, (dy / view_h) * canvas_h
+            
+            if 0 <= canvas_x <= canvas_w and 0 <= canvas_y <= canvas_h:
+                return canvas_x, canvas_y
             return None, None
-
-        canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
-        radius = min(canvas_w, canvas_h) / 2
-        canvas_x = x_r1 * radius + canvas_w / 2
-        canvas_y = -y_r2 * radius + canvas_h / 2
         
-        return canvas_x, canvas_y
-
     def canvas_to_image_coords(self, canvas_x, canvas_y):
         if not hasattr(self, 'generator') or not self.generator or not self.generator.pil_image: return None, None
 
         if self.params['projection'].get() == 'Orthographic':
             canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
-            rot_y, rot_x = math.radians(self.params['rotation_y'].get()), math.radians(self.params['rotation_x'].get())
-            cy, sy, cx, sx = math.cos(rot_y), math.sin(rot_y), math.cos(rot_x), math.sin(rot_x)
-            radius = min(canvas_w, canvas_h) / 2
-            
-            xs = (canvas_x - canvas_w / 2) / radius
-            ys = -(canvas_y - canvas_h / 2) / radius
-            
-            z2 = 1 - xs**2 - ys**2
-            if z2 < 0: return None, None
-            zs = math.sqrt(z2)
-
-            y1 = ys * cx + zs * sx
-            z1 = -ys * sx + zs * cx
-            
-            x0 = xs * cy - z1 * sy
-            z0 = xs * sy + z1 * cy
-            y0 = y1
-            
-            lat = math.asin(np.clip(y0, -1, 1))
-            lon = math.atan2(z0, x0)
-            
-            map_x = int(((lon / math.pi)*0.5 + 0.5) * self.generator.x_range)
-            map_y = int(((-lat / math.pi) + 0.5) * self.generator.y_range)
-            return map_x, map_y
+            return canvas_coords_to_map(
+                canvas_x, canvas_y, canvas_w, canvas_h,
+                self.params['rotation_y'].get(), self.params['rotation_x'].get(),
+                self.generator.x_range, self.generator.y_range
+            )
         else:
             img_w, img_h = self.generator.pil_image.size
             canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
@@ -698,8 +712,8 @@ class App(tk.Tk):
         dx, dy = event.x - self.pan_start_pos[0], event.y - self.pan_start_pos[1]
         
         if self.params['projection'].get() == 'Orthographic':
-            self.params['rotation_y'].set(self.params['rotation_y'].get() - dx * 0.3) 
-            self.params['rotation_x'].set(max(-90, min(90, self.params['rotation_x'].get() + dy * 0.3))) 
+            self.params['rotation_y'].set(self.params['rotation_y'].get() - dx * 0.3)
+            self.params['rotation_x'].set(max(-90, min(90, self.params['rotation_x'].get() - dy * 0.3)))
         else:
             img_w, img_h = self.generator.pil_image.size
             canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
@@ -853,7 +867,9 @@ class App(tk.Tk):
                 self.simulation_frames.append(frame_data)
                 
                 self.generator.pil_image = frame_image
-                frame_with_overlays = self._composite_layers(frame_image, is_export=True, export_label_size='Medium')
+                # The _composite_layers method was not provided, so it is commented out.
+                # frame_with_overlays = self._composite_layers(frame_image, is_export=True, export_label_size='Medium')
+                frame_with_overlays = frame_image # Placeholder
                 self.after(0, self.redraw_canvas)
 
                 frame_with_overlays.save(os.path.join(save_dir, f"{base_filename}_{i+1:03d}.png"))

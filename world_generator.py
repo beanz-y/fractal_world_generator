@@ -1,9 +1,12 @@
+# beanz-y/fractal_world_generator/fractal_world_generator-8b752999818ebdee7e3c696935b618f2a364ff8f/world_generator.py
 import numpy as np # type: ignore
 import random
 import math
 from PIL import Image # type: ignore
 from utils import SimplexNoise
+from constants import BIOME_DEFINITIONS, PREDEFINED_PALETTES, THEME_NAME_FRAGMENTS
 import numba
+from collections import deque
 
 # --- Numba-Optimized Simplex Noise Functions ---
 # This section contains a JIT-compiled implementation of the Simplex Noise logic.
@@ -67,74 +70,6 @@ def _fractal_noise3_jit(x, y, z, perm, grad3, octaves, persistence, lacunarity):
         amplitude *= persistence
         frequency *= lacunarity
     return total / max_value if max_value > 0 else 0
-
-# --- Updated Biome Definitions ---
-# Added a new 'alpine_glacier' biome and a new color range for it.
-BIOME_DEFINITIONS = {
-    'glacier':              {'idx': 52, 'shades': 4, 'temp_range': (0.0, 0.125), 'moist_range': (0.0, 1.0)},
-    'alpine_glacier':       {'idx': 56, 'shades': 4, 'temp_range': (0.0, 0.15), 'moist_range': (0.0, 1.0)}, # New biome
-    'tundra':               {'idx': 48, 'shades': 4, 'temp_range': (0.125, 0.25), 'moist_range': (0.0, 1.0)},
-    'taiga':                {'idx': 40, 'shades': 8, 'temp_range': (0.25, 0.5), 'moist_range': (0.0, 0.33)},
-    'shrubland':            {'idx': 24, 'shades': 4, 'temp_range': (0.25, 0.5), 'moist_range': (0.33, 0.66)},
-    'temperate_forest':     {'idx': 32, 'shades': 8, 'temp_range': (0.25, 0.5), 'moist_range': (0.66, 1.0)},
-    'desert':               {'idx': 16, 'shades': 8, 'temp_range': (0.5, 1.0), 'moist_range': (0.0, 0.16)},
-    'savanna':              {'idx': 25, 'shades': 4, 'temp_range': (0.5, 1.0), 'moist_range': (0.16, 0.33)},
-    'tropical_forest':      {'idx': 33, 'shades': 4, 'temp_range': (0.5, 0.75), 'moist_range': (0.33, 0.66)},
-    'temperate_rainforest': {'idx': 34, 'shades': 4, 'temp_range': (0.5, 0.75), 'moist_range': (0.66, 1.0)},
-    'tropical_rainforest':  {'idx': 35, 'shades': 4, 'temp_range': (0.75, 1.0), 'moist_range': (0.33, 1.0)},
-}
-
-PREDEFINED_PALETTES = {
-    "Biome": [
-        # Water (0-15)
-        (0,0,0), (28,82,106), (43,105,128), (57,128,149), (72,150,171), (86,173,192), (101,196,214), (115,219,235),
-        (0,0,0),(0,0,0),(0,0,0),(0,0,0),(0,0,0),(0,0,0),(0,0,0),(0,0,0),
-        # Desert (16-23)
-        (249,225,184), (244,215,165), (239,205,146), (234,195,127), (229,185,108), (224,175,89), (219,165,70), (214,155,51),
-        # Savanna / Shrubland (24-31)
-        (185,209,139), (170,198,121), (155,187,103), (140,176,85), (125,165,67), (110,154,49), (95,143,31), (80,132,13),
-        # Forest (32-39)
-        (134,188,128), (119,173,113), (104,158,98), (89,143,83), (74,128,68), (59,113,53), (44,98,38), (29,83,23),
-        # Taiga (40-47)
-        (180,191,170), (171,181,162), (162,171,153), (153,161,145), (144,151,136), (135,141,128), (126,131,119), (117,121,111),
-        # Tundra / Rock (48-51)
-        (136,136,136), (150,150,150), (164,164,164), (178,178,178),
-        # Glacier / Polar Ice (52-55)
-        (255,255,255), (245,245,245), (235,235,235), (225,225,225),
-        # New: Alpine Glacier (56-59) - A slightly bluer, icier white
-        (220, 230, 240), (210, 220, 230), (200, 210, 220), (190, 200, 210),
-    ],
-    "Default": [
-        (0,0,0), (0,0,68), (0,17,102), (0,51,136), (0,85,170), (0,119,187),
-        (0,153,221), (0,204,255), (34,221,255), (68,238,255), (102,255,255),
-        (119,255,255), (136,255,255), (153,255,255), (170,255,255), (187,255,255),
-        (0,68,0), (34,102,0), (34,136,0), (119,170,0), (187,221,0), (255,187,34),
-        (238,170,34), (221,136,34), (204,136,34), (187,102,34), (170,85,34),
-        (153,85,34), (136,68,34), (119,51,34), (85,51,17), (68,34,0), (255,255,255),
-        (250,250,250), (245,245,245), (240,240,240), (235,235,235), (230,230,230),
-        (225,225,225), (220,220,220), (215,215,215), (210,210,210), (205,205,205),
-        (200,200,200), (195,195,195), (190,190,190), (185,185,185), (180,180,180),
-        (175,175,175)
-    ],
-}
-
-THEME_NAME_FRAGMENTS = {
-    'High Fantasy': {
-        'prefixes': ['Ael', 'Bara', 'Cael', 'Dra', 'El', 'Fael', 'Gal', 'Har', 'Ith', 'Kor', 'Luth', 'Mor', 'Norn', 'Oth', 'Pyr', 'Quel', 'Rath', 'Sil', 'Tir', 'Val'],
-        'suffixes': ['don', 'dor', 'dras', 'fall', 'fast', 'garde', 'heim', 'ia', 'is', 'kar', 'land', 'lor', 'mar', 'nor', 'os', 'thal', 'thas', 'tine', 'vale', 'wood'],
-        'types': ['Castle', 'Keep', 'Village', 'Town', 'City', 'Citadel', 'Hold', 'Fortress']
-    },
-    'Sci-Fi': {
-        'prefixes': ['Alpha', 'Cygnus', 'Helios', 'Hyper', 'Kepler', 'Nexus', 'Orion', 'Plex', 'Stel', 'Terra', 'Tycho', 'Vex', 'Xylo', 'Zenith', 'Andro'],
-        'suffixes': ['-7', ' Prime', ' Station', ' IX', ' Colony', ' Base', ' One', ' Omega', ' Terminus', ' Hub', ' Complex', ' Citadel', ' Point', ' Major', ' Minor'],
-        'types': ['Outpost', 'Colony', 'Station', 'Base', 'Habitat', 'Complex', 'Dome']
-    },
-    'Post-Apocalyptic': {
-        'prefixes': ['Rust', 'Ash', 'Dust', 'Scrap', 'Bone', 'Wreck', 'Last', 'New', 'Fort', 'Old', 'Sunken', 'Broken', 'Grit'],
-        'suffixes': ['-Town', ' Heap', ' Hope', ' Haven', ' Rock', ' Reach', ' Scrap', ' Yard', ' Camp', ' Refuge', ' Point', ' Out', ' Pit', ' Fall'],
-        'types': ['Camp', 'Settlement', 'Refuge', 'Fort', 'Scrap-town', 'Holdout']
-    },
-}
 
 @numba.jit(nopython=True)
 def scalar_clip(value, min_val, max_val):
@@ -528,8 +463,57 @@ class FractalWorldGenerator:
         self.color_map_before_ice = self.color_map.copy()
         self._apply_ice_caps(percent_ice)
 
+    def _calculate_distance_to_water(self, land_mask):
+        """
+        Calculates the distance from each land pixel to the nearest water pixel
+        using a Breadth-First Search (BFS) algorithm.
+        """
+        if self.progress_callback: self.progress_callback(96, "Placing settlements: Calculating water distance...")
+        
+        x_range, y_range = self.x_range, self.y_range
+        distance_map = np.full(land_mask.shape, np.inf, dtype=np.float32)
+        queue = deque()
+
+        # Efficiently find all land pixels adjacent to water (the "coast") to seed the BFS
+        water_mask = ~land_mask
+        coast_mask = (
+            (np.roll(water_mask, 1, axis=0) & land_mask) |
+            (np.roll(water_mask, -1, axis=0) & land_mask) |
+            (np.roll(water_mask, 1, axis=1) & land_mask) |
+            (np.roll(water_mask, -1, axis=1) & land_mask)
+        )
+        
+        # Initialize the queue with all coastal pixels at distance 1
+        coast_pixels = np.argwhere(coast_mask)
+        for x, y in coast_pixels:
+            distance_map[x, y] = 1
+            queue.append(((x, y), 1))
+
+        # Perform BFS from the coast
+        visited = set(map(tuple, coast_pixels))
+        
+        while queue:
+            (x, y), dist = queue.popleft()
+            
+            # Check neighbors
+            for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nx, ny = (x + dx), y + dy # Horizontal wrapping is handled later if needed
+
+                # Wrap horizontally for seamless world
+                nx = nx % x_range
+                
+                if 0 <= ny < y_range and land_mask[nx, ny] and (nx, ny) not in visited:
+                    visited.add((nx, ny))
+                    distance_map[nx, ny] = dist + 1
+                    queue.append(((nx, ny), dist + 1))
+        
+        return distance_map
+
     def generate_settlements(self):
-        """Generates settlement locations based on terrain suitability."""
+        """
+        Generates settlement locations based on a more realistic suitability model,
+        considering biome type, proximity to water, altitude, and slope.
+        """
         if self.world_map is None or self.land_mask is None:
             return
 
@@ -540,49 +524,69 @@ class FractalWorldGenerator:
             return
 
         if self.progress_callback:
-            self.progress_callback(96, "Placing settlements...")
+            self.progress_callback(96, "Placing settlements: Calculating suitability...")
             
-        # Create a suitability map, initializing to a very low number
-        suitability = np.full(self.world_map.shape, -9999.0, dtype=np.float32)
+        # 1. Start with a base suitability score determined by the biome.
+        BIOME_SUITABILITY = {
+            'temperate_forest': 1.0, 'temperate_rainforest': 0.9,
+            'shrubland': 0.8, 'savanna': 0.7,
+            'tropical_forest': 0.6, 'tropical_rainforest': 0.5,
+            'taiga': 0.4, 'desert': 0.2, 'tundra': 0.1
+        }
+        
+        # Create a map of suitability scores based on the biome of each pixel
+        suitability = np.full(self.world_map.shape, -1.0, dtype=np.float32)
+        for name, props in BIOME_DEFINITIONS.items():
+            if name in BIOME_SUITABILITY:
+                # Get all color indexes for this biome
+                start_idx, end_idx = props['idx'], props['idx'] + props.get('shades', 1)
+                biome_mask = (self.color_map >= start_idx) & (self.color_map < end_idx)
+                suitability[biome_mask] = BIOME_SUITABILITY[name]
 
-        # 1. Base suitability only for valid land (not water or glacier)
-        valid_land = self.land_mask & (self.color_map < BIOME_DEFINITIONS['glacier']['idx'])
-        suitability[valid_land] = 1.0
+        # 2. Add a strong bonus for proximity to water.
+        if np.any(self.land_mask):
+            distance_to_water = self._calculate_distance_to_water(self.land_mask)
+            # Apply a bonus, diminishing with distance. Max bonus of 0.8 for coastlines.
+            water_bonus_mask = np.isfinite(distance_to_water)
+            suitability[water_bonus_mask] += 0.8 / (distance_to_water[water_bonus_mask] ** 0.5)
 
-        # 2. Penalize high altitude and steep slopes on valid land
+        # Create a mask for all valid settlement locations (anywhere with a base score)
+        valid_land = suitability > 0
+        
+        # 3. Penalize high altitude on valid land
         land_altitudes = self.world_map[valid_land]
         if land_altitudes.size > 0:
             min_land_alt, max_land_alt = np.min(land_altitudes), np.max(land_altitudes)
             if max_land_alt > min_land_alt:
-                # Normalize altitude based on land range
                 normalized_land_alt = (self.world_map[valid_land] - min_land_alt) / (max_land_alt - min_land_alt)
-                suitability[valid_land] -= normalized_land_alt * 0.5
+                suitability[valid_land] -= normalized_land_alt * 0.7 # Increased altitude penalty
 
-        # Calculate slope
+        # 4. Penalize steep slopes on valid land
         grad_x, grad_y = np.gradient(self.world_map.astype(np.float32))
         slope = np.sqrt(grad_x**2 + grad_y**2)
         if np.max(slope) > 0:
             normalized_slope = slope / np.max(slope)
-            # Apply penalty only to valid land
-            suitability[valid_land] -= normalized_slope[valid_land] * 2.0
+            suitability[valid_land] -= normalized_slope[valid_land] * 1.5 # Adjusted slope penalty
 
-        # 3. Add noise for variety, only to valid land
+        # 5. Add noise for variety, only to valid land
         settlement_noise_map = self._numba_generate_noise_map(
             self.x_range, self.y_range, self.settlement_perm, self.settlement_grad3,
             scale=20.0, octaves=4, persistence=0.5, lacunarity=2.0
         )
-        suitability[valid_land] += ((settlement_noise_map[valid_land] + 1.0) / 2.0) * 0.3
+        suitability[valid_land] += ((settlement_noise_map[valid_land] + 1.0) / 2.0) * 0.2 # Reduced noise influence
 
-        # 4. Find best locations
-        # Flatten and get indices of top N candidates
+        # Any location that fell below zero suitability is now invalid.
+        suitability[suitability < 0] = -9999.0
+
+        # 6. Find the best locations from the final suitability map
         flat_suitability = suitability.flatten()
-        # Use argpartition for efficiency - find the top N without a full sort
-        num_candidates = min(len(flat_suitability), num_settlements * 10) # Look in top candidates
-        if num_candidates <= 0: return
+        num_candidates = min(len(flat_suitability[flat_suitability > -9999.0]), num_settlements * 20)
+        if num_candidates <= 0:
+            self.settlements = []
+            return
 
         candidate_indices = np.argpartition(flat_suitability, -num_candidates)[-num_candidates:]
         
-        # Ensure minimum distance between settlements
         min_dist = math.sqrt(self.x_range * self.y_range) / (num_settlements * 0.5 + 10)
         min_dist_sq = min_dist**2
 
@@ -593,26 +597,28 @@ class FractalWorldGenerator:
 
         name_fragments = THEME_NAME_FRAGMENTS.get(theme, THEME_NAME_FRAGMENTS['High Fantasy'])
         
+        if self.progress_callback: self.progress_callback(98, "Placing settlements: Finalizing locations...")
+
         for idx in sorted_candidates:
             if len(self.settlements) >= num_settlements:
                 break
 
             x, y = np.unravel_index(idx, (self.x_range, self.y_range))
             
-            # Final check to ensure the chosen point is valid land
-            if not valid_land[x, y]:
-                continue
-            
             is_far_enough = True
             for existing_settlement in self.settlements:
                 ex, ey = existing_settlement['x'], existing_settlement['y']
-                dist_sq = (x - ex)**2 + (y - ey)**2
+                # Account for horizontal wrapping when checking distance
+                dx = abs(x - ex)
+                if dx > self.x_range / 2:
+                    dx = self.x_range - dx
+                dist_sq = dx**2 + (y - ey)**2
+
                 if dist_sq < min_dist_sq:
                     is_far_enough = False
                     break
             
             if is_far_enough:
-                # Generate a thematic name
                 name = random.choice(name_fragments['prefixes']) + random.choice(name_fragments['suffixes'])
                 settlement_type = random.choice(name_fragments['types'])
                 self.settlements.append({'x': x, 'y': y, 'name': name, 'type': settlement_type})
