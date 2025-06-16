@@ -28,7 +28,11 @@ class App(tk.Tk):
         self.view_offset = [0, 0]
         self.pan_start_pos = None
         
-        self.placemarks = []
+        # --- Layer Management System ---
+        self.layers = {}
+        self.layer_visibility = {}
+        self.cached_globe_source_image = None
+        
         self.adding_placemark = tk.BooleanVar(value=False)
         
         self.simulation_frames = []
@@ -47,6 +51,7 @@ class App(tk.Tk):
         
         self.params = {
             'width': tk.IntVar(value=640), 'height': tk.IntVar(value=320),
+            'world_size_preset': tk.StringVar(value='Kingdom (~1,600 km)'),
             'seed': tk.IntVar(value=random.randint(0, 100000)),
             'ice_seed': tk.IntVar(value=random.randint(0, 100000)),
             'moisture_seed': tk.IntVar(value=random.randint(0, 100000)),
@@ -64,8 +69,8 @@ class App(tk.Tk):
             'simulation_event': tk.StringVar(value='Ice Age Cycle'),
             'simulation_speed': tk.StringVar(value='Realistic (Ease In/Out)'),
             'simulation_frames': tk.IntVar(value=20),
-            'hex_grid_visible': tk.BooleanVar(value=False),
-            'hex_grid_size': tk.IntVar(value=50),
+            'theme': tk.StringVar(value='High Fantasy'), 
+            'num_settlements': tk.IntVar(value=50),
         }
         self._create_control_widgets()
         self.tooltip = MapTooltip(self)
@@ -89,6 +94,16 @@ class App(tk.Tk):
         g_row = 0
         self._create_entry_widget("Width:", self.params['width'], g_row, master=gen_frame); g_row += 1
         self._create_entry_widget("Height:", self.params['height'], g_row, master=gen_frame); g_row += 1
+        
+        # World Size Preset Dropdown
+        ttk.Label(gen_frame, text="World Scale:").grid(row=g_row, column=0, sticky='w', padx=5, pady=2);
+        world_size_combo = ttk.Combobox(gen_frame, textvariable=self.params['world_size_preset'], 
+                                   values=['Kingdom (~1,600 km)', 'Region (~6,400 km)', 'Continent (~16,000 km)'], 
+                                   state="readonly")
+        world_size_combo.grid(row=g_row, column=1, columnspan=2, sticky='ew', padx=5); g_row += 1
+        world_size_combo.bind("<<ComboboxSelected>>", self.redraw_canvas)
+
+
         self._create_entry_widget("Seed:", self.params['seed'], g_row, include_random_button=True, master=gen_frame); g_row += 1
         self._create_entry_widget("Ice Seed:", self.params['ice_seed'], g_row, include_random_button=True, master=gen_frame); g_row += 1
         self._create_slider_widget("Faults:", self.params['faults'], 1, 2000, g_row, master=gen_frame); g_row += 1
@@ -108,6 +123,18 @@ class App(tk.Tk):
         wind_combo = ttk.Combobox(climate_frame, textvariable=self.params['wind_direction'], 
                                   values=['West to East', 'East to West', 'North to South', 'South to North'], state="readonly")
         wind_combo.grid(row=c_row, column=0, columnspan=2, sticky='ew', padx=5, pady=(0,5)); c_row += 1
+
+        # --- Civilization Parameters ---
+        civ_frame = ttk.Labelframe(self.controls_frame, text="Civilization")
+        civ_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
+        civ_frame.grid_columnconfigure(1, weight=1)
+        
+        civ_row = 0
+        ttk.Label(civ_frame, text="Theme:").grid(row=civ_row, column=0, columnspan=2, sticky='w', padx=5); civ_row += 1
+        theme_combo = ttk.Combobox(civ_frame, textvariable=self.params['theme'], 
+                                   values=['High Fantasy', 'Sci-Fi', 'Post-Apocalyptic'], state="readonly")
+        theme_combo.grid(row=civ_row, column=0, columnspan=2, sticky='ew', padx=5, pady=(0,5)); civ_row += 1
+        self._create_slider_widget("Settlements:", self.params['num_settlements'], 0, 500, civ_row, master=civ_frame); civ_row += 1
 
         # --- View and Display ---
         view_frame = ttk.Labelframe(self.controls_frame, text="Display")
@@ -136,6 +163,11 @@ class App(tk.Tk):
         self.palette_combobox.set("Biome")
         self.palette_combobox.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=(0,10)); row += 1
         self.palette_combobox.bind("<<ComboboxSelected>>", self.apply_predefined_palette)
+
+        # --- Layers Frame ---
+        self.layers_frame = ttk.Labelframe(self.controls_frame, text="Layers")
+        self.layers_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
+        self._create_layer_widgets()
         
         sim_frame = ttk.Labelframe(self.controls_frame, text="Age Simulator")
         sim_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
@@ -155,19 +187,7 @@ class App(tk.Tk):
         
         self.run_sim_button = ttk.Button(sim_frame, text="Run Simulation", command=self.start_age_simulation, state=tk.DISABLED)
         self.run_sim_button.grid(row=sf_row, column=0, columnspan=3, sticky='ew', padx=5, pady=5)
-        
-        overlay_frame = ttk.Labelframe(self.controls_frame, text="Overlay Tools")
-        overlay_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
-        overlay_frame.grid_columnconfigure(0, weight=1)
-        ttk.Checkbutton(overlay_frame, text="Show Hex Grid", variable=self.params['hex_grid_visible'], command=self.redraw_canvas).grid(row=0, column=0, sticky='w', padx=5)
-        self._create_slider_widget("Hex Size:", self.params['hex_grid_size'], 10, 200, 1, master=overlay_frame)
-        self.params['hex_grid_size'].trace_add('write', lambda *_: self.redraw_canvas())
-        
-        placemark_frame = ttk.Labelframe(self.controls_frame, text="Placemark Tools")
-        placemark_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
-        add_placemark_button = ttk.Checkbutton(placemark_frame, text="Add Placemark", variable=self.adding_placemark, command=self.toggle_placemark_mode)
-        add_placemark_button.pack(side=tk.LEFT, padx=5)
-        
+                
         ttk.Separator(self.controls_frame, orient='horizontal').grid(row=row, columnspan=3, sticky='ew', pady=10); row += 1
         
         self.progress = ttk.Progressbar(self.controls_frame, orient='horizontal', mode='determinate')
@@ -210,18 +230,52 @@ class App(tk.Tk):
         self.next_frame_button.pack(side=tk.LEFT, padx=5)
         self.on_projection_change()
 
+    def _create_layer_widgets(self):
+        # Clear existing widgets if any
+        for widget in self.layers_frame.winfo_children():
+            widget.destroy()
+
+        self.layer_visibility = {
+            'Settlements': tk.BooleanVar(value=True),
+            'Placemarks': tk.BooleanVar(value=True),
+        }
+        
+        # Bind toggling redraw to each variable
+        for name, var in self.layer_visibility.items():
+            var.trace_add('write', lambda *args, n=name: self._toggle_layer_visibility(n))
+
+        # Create checkbuttons
+        ttk.Checkbutton(self.layers_frame, text="Settlements", variable=self.layer_visibility['Settlements']).grid(row=0, column=0, sticky='w', padx=5)
+        
+        placemark_frame = ttk.Frame(self.layers_frame)
+        placemark_frame.grid(row=1, column=0, columnspan=2, sticky='w')
+        ttk.Checkbutton(placemark_frame, text="Placemarks", variable=self.layer_visibility['Placemarks']).pack(side=tk.LEFT, padx=5)
+        ttk.Checkbutton(placemark_frame, text="Add Placemark", variable=self.adding_placemark, command=self.toggle_placemark_mode).pack(side=tk.LEFT, padx=5)
+
+    def _toggle_layer_visibility(self, layer_name):
+        self.cached_globe_source_image = None
+        self.redraw_canvas()
+
     def ease_in_out_cubic(self, x):
         """Non-linear animation timing function."""
         return 4 * x * x * x if x < 0.5 else 1 - pow(-2 * x + 2, 3) / 2
 
-    def _create_entry_widget(self, label_text, var, row, include_random_button=False, master=None):
+    def _create_entry_widget(self, label_text, var, row, include_random_button=False, master=None, use_grid=False):
         if master is None: master = self.controls_frame
-        ttk.Label(master, text=label_text).grid(row=row, column=0, sticky='w', padx=5, pady=2)
-        entry = ttk.Entry(master, textvariable=var, width=10)
-        entry.grid(row=row, column=1, sticky='ew', padx=5)
+        
+        container = ttk.Frame(master)
+        
+        ttk.Label(container, text=label_text).pack(side=tk.LEFT, padx=(0,5))
+        entry = ttk.Entry(container, textvariable=var, width=10)
+        entry.pack(side=tk.LEFT)
         if include_random_button:
-            button = ttk.Button(master, text="🎲", width=3, command=lambda v=var: v.set(random.randint(0, 100000)))
-            button.grid(row=row, column=2, sticky='w')
+            button = ttk.Button(container, text="🎲", width=3, command=lambda v=var: v.set(random.randint(0, 100000)))
+            button.pack(side=tk.LEFT, padx=(5,0))
+            
+        if use_grid:
+            container.grid(row=row, column=1, sticky='ew', padx=5, pady=2)
+        else:
+            container.grid(row=row, column=0, columnspan=2, sticky='ew', padx=5, pady=2)
         
     def _create_slider_widget(self, label_text, var, from_, to, row, master=None):
         if master is None: master = self.controls_frame
@@ -255,10 +309,9 @@ class App(tk.Tk):
     def on_projection_change(self):
         if self.params['projection'].get() == 'Orthographic':
             self.rotation_frame.grid()
-            self.redraw_canvas()
         else:
             self.rotation_frame.grid_remove()
-            self.redraw_canvas()
+        self.redraw_canvas()
 
     def _on_canvas_press(self, event):
         if self.adding_placemark.get():
@@ -275,7 +328,9 @@ class App(tk.Tk):
             
         img_x, img_y = self.canvas_to_image_coords(event.x, event.y)
         if img_x is not None:
-            self.placemarks.append({'name': placemark_name, 'x': img_x, 'y': img_y})
+            if 'placemarks' not in self.layers:
+                self.layers['placemarks'] = []
+            self.layers['placemarks'].append({'name': placemark_name, 'x': img_x, 'y': img_y})
             self.redraw_canvas()
 
     def _on_map_hover(self, event):
@@ -323,7 +378,7 @@ class App(tk.Tk):
         
         if 1 <= index <= 7: return "Water"
         if 16 <= index <= 31: return "Land"
-        return None
+        return "Unknown"
         
     def set_ui_state(self, is_generating):
         state = tk.DISABLED if is_generating else tk.NORMAL
@@ -337,10 +392,21 @@ class App(tk.Tk):
         self.frame_viewer_frame.grid_remove()
         self.simulation_frames = []
         self.current_frame_index = -1
+        self.layers = {} # Reset layers
         self.zoom = 1.0
         self.view_offset = [0, 0]
-        self.placemarks = []
-        params_dict = {key: var.get() for key, var in self.params.items()}
+        self.cached_globe_source_image = None # Invalidate cache
+        params_dict = {key: var.get() for key, var in self.params.items() if key != 'world_size_preset'}
+        
+        # Convert world size preset string to circumference value
+        size_preset = self.params['world_size_preset'].get()
+        circumference_map = {
+            'Kingdom (~1,600 km)': 1600.0,
+            'Region (~6,400 km)': 6400.0,
+            'Continent (~16,000 km)': 16000.0,
+        }
+        params_dict['world_circumference_km'] = circumference_map.get(size_preset, 6400.0)
+
         thread = threading.Thread(target=self.run_generation_in_thread, args=(params_dict,), daemon=True)
         thread.start()
         
@@ -351,9 +417,17 @@ class App(tk.Tk):
 
         self.generator = FractalWorldGenerator(params_dict, self.palette, self.update_generation_progress)
         self.pil_image = self.generator.generate()
+        
+        # After base generation, generate civilization layers
+        self.generator.generate_settlements()
+        
         self.after(0, self.finalize_generation)
 
     def finalize_generation(self):
+        # Populate layer data from the generator
+        self.layers['settlements'] = self.generator.settlements
+        self.cached_globe_source_image = None # Invalidate cache
+        
         self.redraw_canvas()
         self.set_ui_state(is_generating=False)
         self.status_label.config(text="Ready")
@@ -363,71 +437,58 @@ class App(tk.Tk):
             self.progress.config(value=value),
             self.status_label.config(text=text)
         ))
+    
+    def _draw_layers_on_canvas(self):
+        """Draws vector layers directly onto the canvas."""
+        self.canvas.delete("overlay") # Clear old vector overlays
+
+        if self.layer_visibility.get('Settlements', tk.BooleanVar(value=False)).get() and 'settlements' in self.layers:
+            self._draw_settlements_on_canvas(self.layers['settlements'])
+
+        if self.layer_visibility.get('Placemarks', tk.BooleanVar(value=False)).get() and 'placemarks' in self.layers:
+            self._draw_placemarks_on_canvas(self.layers['placemarks'])
+
+    def _draw_placemarks_on_canvas(self, placemarks):
+        font_size = 10
+        icon_radius = 4
         
-    def _draw_placemarks_on_image(self, image):
-        if not self.placemarks:
-            return image
-        
-        draw = ImageDraw.Draw(image)
-        try:
-            font = ImageFont.truetype("arial.ttf", 15)
-        except IOError:
-            font = ImageFont.load_default()
+        for pm in placemarks:
+            canvas_x, canvas_y = self.image_to_canvas_coords(pm['x'], pm['y'])
+            if canvas_x is None: continue
             
-        for pm in self.placemarks:
-            x, y = pm['x'], pm['y']
-            draw.ellipse((x-3, y-3, x+3, y+3), fill='red', outline='black')
-            draw.text((x+5, y-8), pm['name'], fill="black", font=font, stroke_width=2, stroke_fill="white")
-            
-        return image
-        
-    def _draw_hex_grid_on_image(self, image):
-        if not self.params['hex_grid_visible'].get():
-            return image
+            self.canvas.create_oval(canvas_x - icon_radius, canvas_y - icon_radius, 
+                                    canvas_x + icon_radius, canvas_y + icon_radius, 
+                                    fill='red', outline='black', tags="overlay")
+            self.canvas.create_text(canvas_x + icon_radius + 2, canvas_y,
+                                    text=pm['name'], anchor='w', font=("Arial", font_size), fill="white", tags="overlay")
 
-        size = self.params['hex_grid_size'].get()
-        if size <= 0: return image
+    def _draw_settlements_on_canvas(self, settlements):
+        font_size = 9
+        icon_radius = 3
 
-        overlay = Image.new('RGBA', image.size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay)
-        
-        hex_width = math.sqrt(3) * size
-        vert_dist = size * 1.5
-        
-        q_end = int(image.width / hex_width) + 2
-        r_end = int(image.height / vert_dist) + 2
-        
-        for r in range(-1, r_end):
-            for q in range(-1, q_end):
-                hex_center_x = q * hex_width
-                if r % 2 != 0:
-                    hex_center_x += hex_width / 2.0
-                hex_center_y = r * vert_dist
-                
-                points = []
-                for i in range(6):
-                    angle_deg = 60 * i + 30
-                    angle_rad = math.pi / 180 * angle_deg
-                    point_x = hex_center_x + size * math.cos(angle_rad)
-                    point_y = hex_center_y + size * math.sin(angle_rad)
-                    points.append((point_x, point_y))
-                
-                draw.polygon(points, outline=(0, 0, 0, 128), fill=None)
-                
-        return Image.alpha_composite(image.convert('RGBA'), overlay).convert('RGB')
+        for settlement in settlements:
+            canvas_x, canvas_y = self.image_to_canvas_coords(settlement['x'], settlement['y'])
+            if canvas_x is None: continue
 
-
+            self.canvas.create_oval(canvas_x - icon_radius, canvas_y - icon_radius, 
+                                    canvas_x + icon_radius, canvas_y + icon_radius, 
+                                    fill='white', outline='black', tags="overlay")
+            self.canvas.create_text(canvas_x + icon_radius + 2, canvas_y,
+                                    text=settlement['name'], anchor='w', font=("Arial", font_size), fill="white", tags="overlay")
+    
     def redraw_canvas(self, event=None):
         if not hasattr(self, 'generator') or not self.generator or not self.generator.pil_image: return
         self.tooltip.hide()
         
-        image_with_overlays = self._draw_hex_grid_on_image(
-            self._draw_placemarks_on_image(self.generator.pil_image.copy())
-        )
+        self.canvas.delete("all")
+        
         projection = self.params['projection'].get()
 
         if projection == 'Orthographic':
-            source_array = np.array(image_with_overlays.convert('RGB'))
+            if self.cached_globe_source_image is None:
+                self.cached_globe_source_image = self.generator.pil_image
+            
+            source_array = np.array(self.cached_globe_source_image.convert('RGB'))
             canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
             if canvas_w <= 1 or canvas_h <= 1: return
 
@@ -443,12 +504,17 @@ class App(tk.Tk):
             z = np.sqrt(z2[visible_mask])
             x_ndc_masked, y_ndc_masked = ndc_x[visible_mask], ndc_y[visible_mask]
             
-            y_r1 = y_ndc_masked * cx - z * sx
-            z_r1 = y_ndc_masked * sx + z * cx
-            x_r2 = x_ndc_masked * cy - z_r1 * sy
-            z_r2 = x_ndc_masked * sy + z_r1 * cy
+            # Inverse pitch
+            y_r1 = y_ndc_masked * cx + z * sx
+            z_r1 = -y_ndc_masked * sx + z * cx
+            x_r1 = x_ndc_masked
 
-            lat, lon = np.arcsin(-y_r1), np.arctan2(x_r2, z_r2)
+            # Inverse yaw
+            x_r2 = x_r1 * cy + z_r1 * sy
+            z_r2 = -x_r1 * sy + z_r1 * cy
+            y_r2 = y_r1
+
+            lat, lon = np.arcsin(np.clip(y_r2, -1, 1)), np.arctan2(x_r2, z_r2)
             
             src_x = np.clip(((lon / math.pi)*0.5 + 0.5) * self.generator.x_range, 0, self.generator.x_range - 1)
             src_y = np.clip(((-lat / math.pi) + 0.5) * self.generator.y_range, 0, self.generator.y_range - 1)
@@ -457,19 +523,24 @@ class App(tk.Tk):
             new_img_array[canvas_coords_y[visible_mask], canvas_coords_x[visible_mask]] = source_array[src_y.astype(int), src_x.astype(int)]
 
             final_image = Image.fromarray(new_img_array)
-        else:
-            img_w, img_h = image_with_overlays.size
-            view_w, view_h = img_w / self.zoom, img_h / self.zoom
+            self.tk_image = ImageTk.PhotoImage(final_image)
+            self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image, tags="map_image")
+            
+            self._draw_layers_on_canvas()
+
+        else: # Equirectangular view with live overlays
+            self.cached_globe_source_image = None
+            img_w, img_h = self.generator.pil_image.size
+            view_w = img_w / self.zoom
+            view_h = img_h / self.zoom
             
             x0 = self.view_offset[0]
             y0 = max(0, min(self.view_offset[1], img_h - view_h))
             self.view_offset[1] = y0
-
             x0_wrapped = x0 % img_w
             
-            box1_x_end = min(img_w, x0_wrapped + view_w)
-            box1 = (x0_wrapped, y0, box1_x_end, y0 + view_h)
-            crop1 = image_with_overlays.crop(box1)
+            box1 = (x0_wrapped, y0, min(img_w, x0_wrapped + view_w), y0 + view_h)
+            crop1 = self.generator.pil_image.crop(box1)
             
             stitched_image = Image.new('RGB', (int(view_w), int(view_h)))
             stitched_image.paste(crop1, (0, 0))
@@ -477,59 +548,138 @@ class App(tk.Tk):
             if x0_wrapped + view_w > img_w:
                 remaining_w = (x0_wrapped + view_w) - img_w
                 box2 = (0, y0, remaining_w, y0 + view_h)
-                crop2 = image_with_overlays.crop(box2)
+                crop2 = self.generator.pil_image.crop(box2)
                 stitched_image.paste(crop2, (crop1.width, 0))
             
-            final_image = stitched_image
+            canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
+            if canvas_w <= 1 or canvas_h <=1: return
+            
+            resized_image = stitched_image.resize((canvas_w, canvas_h), Image.Resampling.NEAREST)
+            self.tk_image = ImageTk.PhotoImage(resized_image)
+            self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image, tags="map_image")
+            
+            self._draw_layers_on_canvas()
 
-        resized_image = final_image.resize((self.canvas.winfo_width(), self.canvas.winfo_height()), Image.Resampling.NEAREST)
-        self.tk_image = ImageTk.PhotoImage(resized_image)
-        self.canvas.delete("all")
-        self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image)
+    def image_to_canvas_coords(self, img_x, img_y):
+        """Converts full map image coordinates to on-screen canvas coordinates for the current projection."""
+        if self.params['projection'].get() == 'Orthographic':
+            return self._image_to_globe_canvas_coords(img_x, img_y)
+        else:
+            return self._image_to_flat_canvas_coords(img_x, img_y)
+    
+    def _image_to_flat_canvas_coords(self, img_x, img_y):
+        if not hasattr(self, 'generator') or not self.generator.pil_image: return None, None
+            
+        img_w, img_h = self.generator.pil_image.size
+        canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
+        if canvas_w <= 1 or canvas_h <= 1: return None, None
+
+        view_w, view_h = img_w / self.zoom, img_h / self.zoom
+        
+        dx = img_x - self.view_offset[0]
+        if abs(dx) > img_w / 2: dx -= np.sign(dx) * img_w
+        dy = img_y - self.view_offset[1]
+        
+        canvas_x, canvas_y = (dx / view_w) * canvas_w, (dy / view_h) * canvas_h
+        
+        if 0 <= canvas_x <= canvas_w and 0 <= canvas_y <= canvas_h:
+            return canvas_x, canvas_y
+        return None, None
+        
+    def _image_to_globe_canvas_coords(self, img_x, img_y):
+        if not hasattr(self, 'generator') or not self.generator.pil_image: return None, None
+        
+        lon = (img_x / self.generator.x_range - 0.5) * 2 * math.pi
+        lat = -(img_y / self.generator.y_range - 0.5) * math.pi
+
+        x3d = math.cos(lat) * math.cos(lon)
+        y3d = math.sin(lat)
+        z3d = math.cos(lat) * math.sin(lon)
+
+        rot_y, rot_x = math.radians(self.params['rotation_y'].get()), math.radians(self.params['rotation_x'].get())
+        cy, sy, cx, sx = math.cos(rot_y), math.sin(rot_y), math.cos(rot_x), math.sin(rot_x)
+
+        x_r1 = x3d * cy - z3d * sy
+        z_r1 = x3d * sy + z3d * cy
+        
+        y_r2 = y3d * cx - z_r1 * sx
+        z_r2 = y3d * sx + z_r1 * cx
+
+        if z_r2 < 0:
+            return None, None
+
+        canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
+        radius = min(canvas_w, canvas_h) / 2
+        canvas_x = x_r1 * radius + canvas_w / 2
+        canvas_y = -y_r2 * radius + canvas_h / 2
+        
+        return canvas_x, canvas_y
 
     def canvas_to_image_coords(self, canvas_x, canvas_y):
+        if not hasattr(self, 'generator') or not self.generator or not self.generator.pil_image: return None, None
+
         if self.params['projection'].get() == 'Orthographic':
-            if not self.generator: return None, None
             canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
             rot_y, rot_x = math.radians(self.params['rotation_y'].get()), math.radians(self.params['rotation_x'].get())
             cy, sy, cx, sx = math.cos(rot_y), math.sin(rot_y), math.cos(rot_x), math.sin(rot_x)
             radius = min(canvas_w, canvas_h) / 2
-            ndc_x, ndc_y = (canvas_x - canvas_w / 2) / radius, (canvas_y - canvas_h / 2) / radius
-            z2 = 1 - ndc_x**2 - ndc_y**2
+            
+            xs = (canvas_x - canvas_w / 2) / radius
+            ys = -(canvas_y - canvas_h / 2) / radius
+            
+            z2 = 1 - xs**2 - ys**2
             if z2 < 0: return None, None
-            z = math.sqrt(z2)
-            y_r1, z_r1 = ndc_y * cx - z * sx, ndc_y * sx + z * cx
-            x_r2, z_r2 = ndc_x * cy - z_r1 * sy, ndc_x * sy + z_r1 * cy
-            lat, lon = math.asin(-y_r1), math.atan2(x_r2, z_r2)
-            map_x = int(((lon / math.pi) * 0.5 + 0.5) * self.generator.x_range)
+            zs = math.sqrt(z2)
+
+            y1 = ys * cx + zs * sx
+            z1 = -ys * sx + zs * cx
+            
+            x0 = xs * cy - z1 * sy
+            z0 = xs * sy + z1 * cy
+            y0 = y1
+            
+            lat = math.asin(np.clip(y0, -1, 1))
+            lon = math.atan2(z0, x0)
+            
+            map_x = int(((lon / math.pi)*0.5 + 0.5) * self.generator.x_range)
             map_y = int(((-lat / math.pi) + 0.5) * self.generator.y_range)
             return map_x, map_y
+        else:
+            img_w, img_h = self.generator.pil_image.size
+            canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
+            if canvas_w == 0 or canvas_h == 0: return None, None
             
-        if not hasattr(self, 'generator') or not self.generator or not self.generator.pil_image: return -1, -1
-        
-        img_w, img_h = self.generator.pil_image.size
-        canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
-        if canvas_w == 0 or canvas_h == 0: return -1, -1
-        
-        percent_x, percent_y = canvas_x / canvas_w, canvas_y / canvas_h
-        view_w, view_h = img_w / self.zoom, img_h / self.zoom
-        
-        img_x = (self.view_offset[0] + (percent_x * view_w)) % img_w
-        img_y = self.view_offset[1] + (percent_y * view_h)
-        
-        return int(img_x), int(img_y)
+            percent_x, percent_y = canvas_x / canvas_w, canvas_y / canvas_h
+            view_w = img_w / self.zoom
+            view_h = img_h / self.zoom
+            
+            img_x = self.view_offset[0] + (percent_x * view_w)
+            img_y = self.view_offset[1] + (percent_y * view_h)
+            
+            img_x_wrapped = img_x % img_w
+            
+            return int(img_x_wrapped), int(img_y)
 
     def _on_zoom(self, event):
         if not self.generator or not self.generator.pil_image: return
         if self.params['projection'].get() == 'Orthographic': return
         
+        img_x_before, img_y_before = self.canvas_to_image_coords(event.x, event.y)
+        if img_x_before is None: return
+
         factor = 1.1 if event.delta > 0 else 0.9
-        img_x, img_y = self.canvas_to_image_coords(event.x, event.y)
         self.zoom *= factor
-        self.zoom = max(0.1, min(self.zoom, 10))
-        new_img_x, new_img_y = self.canvas_to_image_coords(event.x, event.y)
-        self.view_offset[0] += (img_x - new_img_x)
-        self.view_offset[1] += (img_y - new_img_y)
+        self.zoom = max(0.1, min(self.zoom, 50))
+
+        img_w, img_h = self.generator.pil_image.size
+        canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
+        
+        view_w_after = img_w / self.zoom
+        view_h_after = img_h / self.zoom
+
+        self.view_offset[0] = img_x_before - (event.x / canvas_w) * view_w_after
+        self.view_offset[1] = img_y_before - (event.y / canvas_h) * view_h_after
+
         self.redraw_canvas()
 
     def _on_pan_start(self, event):
@@ -548,11 +698,20 @@ class App(tk.Tk):
         dx, dy = event.x - self.pan_start_pos[0], event.y - self.pan_start_pos[1]
         
         if self.params['projection'].get() == 'Orthographic':
-            self.params['rotation_y'].set(self.params['rotation_y'].get() + dx * 0.5)
-            self.params['rotation_x'].set(max(-90, min(90, self.params['rotation_x'].get() + dy * 0.5)))
+            self.params['rotation_y'].set(self.params['rotation_y'].get() - dx * 0.3) 
+            self.params['rotation_x'].set(max(-90, min(90, self.params['rotation_x'].get() + dy * 0.3))) 
         else:
-            self.view_offset[0] -= dx / self.zoom
-            self.view_offset[1] -= dy / self.zoom
+            img_w, img_h = self.generator.pil_image.size
+            canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
+
+            px_per_canvas_x = (img_w / self.zoom) / canvas_w
+            px_per_canvas_y = (img_h / self.zoom) / canvas_h
+            
+            delta_img_x = dx * px_per_canvas_x
+            delta_img_y = dy * px_per_canvas_y
+            
+            self.view_offset[0] -= delta_img_x
+            self.view_offset[1] -= delta_img_y
         
         self.pan_start_pos = (event.x, event.y)
         self.redraw_canvas()
@@ -564,18 +723,11 @@ class App(tk.Tk):
             self.canvas.config(cursor="")
 
     def save_image(self):
-        if not self.generator or not self.generator.pil_image: return
-        file_path = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG Image", "*.png"), ("JPEG Image", "*.jpg"), ("All Files", "*.*")])
-        if file_path:
-            try:
-                img_with_overlays = self._draw_hex_grid_on_image(self._draw_placemarks_on_image(self.generator.pil_image.copy()))
-                img_with_overlays.save(file_path)
-
-            except Exception as e: tk.messagebox.showerror("Save Error", f"Failed to save image:\n{e}")
-
+        # This function will need to be re-implemented for the new rendering system
+        tk.messagebox.showinfo("Export Not Ready", "The export functionality is being updated.")
     def save_preset(self):
         params_to_save = {key: var.get() for key, var in self.params.items()}
-        params_to_save['placemarks'] = self.placemarks
+        params_to_save['layers'] = self.layers
         file_path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON Preset File", "*.json"), ("All Files", "*.*")], title="Save Preset As")
         if file_path:
             try:
@@ -590,7 +742,7 @@ class App(tk.Tk):
                 for key, var in self.params.items():
                     if key in loaded_params: var.set(loaded_params[key])
                 
-                self.placemarks = loaded_params.get('placemarks', [])
+                self.layers = loaded_params.get('layers', {})
                 self.redraw_canvas()
 
                 self.on_projection_change()
@@ -678,12 +830,10 @@ class App(tk.Tk):
                     eased_progress = raw_progress
 
                 if i < midpoint:
-                    # Cooling phase
                     current_ice = start_ice + (peak_ice - start_ice) * eased_progress
                     current_water = start_water + (peak_water - start_water) * eased_progress
                     current_temp_offset = max_temp_offset * eased_progress
                 else:
-                    # Warming phase
                     if use_separate_thaw_seed and not switched_to_thaw_noise:
                         self.generator.set_ice_seed(thaw_seed)
                         switched_to_thaw_noise = True
@@ -703,10 +853,10 @@ class App(tk.Tk):
                 self.simulation_frames.append(frame_data)
                 
                 self.generator.pil_image = frame_image
+                frame_with_overlays = self._composite_layers(frame_image, is_export=True, export_label_size='Medium')
                 self.after(0, self.redraw_canvas)
 
-                frame_image_with_overlays = self._draw_hex_grid_on_image(self._draw_placemarks_on_image(frame_image))
-                frame_image_with_overlays.save(os.path.join(save_dir, f"{base_filename}_{i+1:03d}.png"))
+                frame_with_overlays.save(os.path.join(save_dir, f"{base_filename}_{i+1:03d}.png"))
                 time.sleep(0.05) 
 
         if use_separate_thaw_seed:
@@ -745,6 +895,43 @@ class App(tk.Tk):
         self.frame_label.config(text=f"{index + 1} / {len(self.simulation_frames)}")
         self.prev_frame_button.config(state=tk.NORMAL if index > 0 else tk.DISABLED)
         self.next_frame_button.config(state=tk.NORMAL if index < len(self.simulation_frames) - 1 else tk.DISABLED)
+
+class ExportDialog(simpledialog.Dialog):
+    def body(self, master):
+        self.title("Export Options")
+        
+        self.export_type = tk.StringVar(value="VTT Map")
+        self.label_size = tk.StringVar(value="Medium")
+
+        ttk.Label(master, text="Export Type:").grid(row=0, sticky='w', padx=5, pady=2)
+        ttk.Radiobutton(master, text="VTT Map (Overlays with fixed size)", variable=self.export_type, value="VTT Map").grid(row=1, sticky='w', padx=10)
+        ttk.Radiobutton(master, text="GM Map (Overlays match current view)", variable=self.export_type, value="GM Map").grid(row=2, sticky='w', padx=10)
+        ttk.Radiobutton(master, text="Player Map (No overlays)", variable=self.export_type, value="Player Map").grid(row=3, sticky='w', padx=10)
+
+        self.label_frame = ttk.Labelframe(master, text="Label Size for VTT Export")
+        self.label_frame.grid(row=4, columnspan=2, sticky='ew', padx=5, pady=5)
+        
+        ttk.Radiobutton(self.label_frame, text="Small", variable=self.label_size, value="Small").pack(side=tk.LEFT, padx=5, pady=5)
+        ttk.Radiobutton(self.label_frame, text="Medium", variable=self.label_size, value="Medium").pack(side=tk.LEFT, padx=5, pady=5)
+        ttk.Radiobutton(self.label_frame, text="Large", variable=self.label_size, value="Large").pack(side=tk.LEFT, padx=5, pady=5)
+        
+        self.export_type.trace_add('write', self._toggle_label_options)
+        self.result = None
+        return None
+
+    def _toggle_label_options(self, *args):
+        if self.export_type.get() == "VTT Map":
+            for child in self.label_frame.winfo_children():
+                child.config(state=tk.NORMAL)
+        else:
+            for child in self.label_frame.winfo_children():
+                child.config(state=tk.DISABLED)
+
+    def apply(self):
+        self.result = {
+            'type': self.export_type.get(),
+            'label_size': self.label_size.get()
+        }
 
 if __name__ == "__main__":
     app = App()

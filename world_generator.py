@@ -118,6 +118,24 @@ PREDEFINED_PALETTES = {
     ],
 }
 
+THEME_NAME_FRAGMENTS = {
+    'High Fantasy': {
+        'prefixes': ['Ael', 'Bara', 'Cael', 'Dra', 'El', 'Fael', 'Gal', 'Har', 'Ith', 'Kor', 'Luth', 'Mor', 'Norn', 'Oth', 'Pyr', 'Quel', 'Rath', 'Sil', 'Tir', 'Val'],
+        'suffixes': ['don', 'dor', 'dras', 'fall', 'fast', 'garde', 'heim', 'ia', 'is', 'kar', 'land', 'lor', 'mar', 'nor', 'os', 'thal', 'thas', 'tine', 'vale', 'wood'],
+        'types': ['Castle', 'Keep', 'Village', 'Town', 'City', 'Citadel', 'Hold', 'Fortress']
+    },
+    'Sci-Fi': {
+        'prefixes': ['Alpha', 'Cygnus', 'Helios', 'Hyper', 'Kepler', 'Nexus', 'Orion', 'Plex', 'Stel', 'Terra', 'Tycho', 'Vex', 'Xylo', 'Zenith', 'Andro'],
+        'suffixes': ['-7', ' Prime', ' Station', ' IX', ' Colony', ' Base', ' One', ' Omega', ' Terminus', ' Hub', ' Complex', ' Citadel', ' Point', ' Major', ' Minor'],
+        'types': ['Outpost', 'Colony', 'Station', 'Base', 'Habitat', 'Complex', 'Dome']
+    },
+    'Post-Apocalyptic': {
+        'prefixes': ['Rust', 'Ash', 'Dust', 'Scrap', 'Bone', 'Wreck', 'Last', 'New', 'Fort', 'Old', 'Sunken', 'Broken', 'Grit'],
+        'suffixes': ['-Town', ' Heap', ' Hope', ' Haven', ' Rock', ' Reach', ' Scrap', ' Yard', ' Camp', ' Refuge', ' Point', ' Out', ' Pit', ' Fall'],
+        'types': ['Camp', 'Settlement', 'Refuge', 'Fort', 'Scrap-town', 'Holdout']
+    },
+}
+
 @numba.jit(nopython=True)
 def scalar_clip(value, min_val, max_val):
     if value < min_val: return min_val
@@ -203,13 +221,17 @@ class FractalWorldGenerator:
         
         ice_seed = self.params.get('ice_seed', self.seed)
         moisture_seed = self.params.get('moisture_seed', self.seed)
+        settlement_seed = self.params.get('seed') + 1 # Use a derived seed for settlements
         self.ice_noise = SimplexNoise(seed=ice_seed)
         self.moisture_noise = SimplexNoise(seed=moisture_seed)
+        self.settlement_noise = SimplexNoise(seed=settlement_seed)
         
         self.moisture_perm = np.array(self.moisture_noise.perm, dtype=np.int64)
         self.moisture_grad3 = np.array(self.moisture_noise.grad3, dtype=np.float64)
         self.ice_perm = np.array(self.ice_noise.perm, dtype=np.int64)
         self.ice_grad3 = np.array(self.ice_noise.grad3, dtype=np.float64)
+        self.settlement_perm = np.array(self.settlement_noise.perm, dtype=np.int64)
+        self.settlement_grad3 = np.array(self.settlement_noise.grad3, dtype=np.float64)
 
         self.palette = palette
         self.INT_MIN_PLACEHOLDER = -2**31
@@ -217,6 +239,10 @@ class FractalWorldGenerator:
         self.color_map = None
         self.pil_image = None
         self.color_map_before_ice = None
+        self.land_mask = None
+        
+        # Civilization data
+        self.settlements = []
 
     def set_ice_seed(self, seed):
         self.ice_noise = SimplexNoise(seed=seed)
@@ -483,24 +509,114 @@ class FractalWorldGenerator:
         self.color_map = np.zeros_like(self.world_map, dtype=np.uint8)
         
         water_mask = self.world_map < water_level_threshold
-        land_mask = ~water_mask
+        self.land_mask = ~water_mask
         
         water_min, water_max = min_z, water_level_threshold
         if water_max == water_min: water_max = water_min + 1
+        # FIX: Apply water coloring to the correct mask (water_mask)
         self.color_map[water_mask] = 1 + np.floor(6.99 * (self.world_map[water_mask] - water_min) / (water_max - water_min))
 
         land_min, land_max = water_level_threshold, max_z
         if land_max == land_min: land_max = land_min + 1
         
         if map_style == 'Biome':
-            self._apply_biomes(land_mask, land_min, land_max, temp_offset)
+            self._apply_biomes(self.land_mask, land_min, land_max, temp_offset)
         else: # Terrain style
-            normalized_altitude = (self.world_map[land_mask] - land_min) / (land_max - land_min)
-            self.color_map[land_mask] = 16 + np.floor(15.99 * normalized_altitude)
+            normalized_altitude = (self.world_map[self.land_mask] - land_min) / (land_max - land_min)
+            self.color_map[self.land_mask] = 16 + np.floor(15.99 * normalized_altitude)
 
         self.color_map_before_ice = self.color_map.copy()
         self._apply_ice_caps(percent_ice)
 
+    def generate_settlements(self):
+        """Generates settlement locations based on terrain suitability."""
+        if self.world_map is None or self.land_mask is None:
+            return
+
+        num_settlements = self.params['num_settlements']
+        theme = self.params.get('theme', 'High Fantasy')
+        if num_settlements == 0:
+            self.settlements = []
+            return
+
+        if self.progress_callback:
+            self.progress_callback(96, "Placing settlements...")
+            
+        # Create a suitability map, initializing to a very low number
+        suitability = np.full(self.world_map.shape, -9999.0, dtype=np.float32)
+
+        # 1. Base suitability only for valid land (not water or glacier)
+        valid_land = self.land_mask & (self.color_map < BIOME_DEFINITIONS['glacier']['idx'])
+        suitability[valid_land] = 1.0
+
+        # 2. Penalize high altitude and steep slopes on valid land
+        land_altitudes = self.world_map[valid_land]
+        if land_altitudes.size > 0:
+            min_land_alt, max_land_alt = np.min(land_altitudes), np.max(land_altitudes)
+            if max_land_alt > min_land_alt:
+                # Normalize altitude based on land range
+                normalized_land_alt = (self.world_map[valid_land] - min_land_alt) / (max_land_alt - min_land_alt)
+                suitability[valid_land] -= normalized_land_alt * 0.5
+
+        # Calculate slope
+        grad_x, grad_y = np.gradient(self.world_map.astype(np.float32))
+        slope = np.sqrt(grad_x**2 + grad_y**2)
+        if np.max(slope) > 0:
+            normalized_slope = slope / np.max(slope)
+            # Apply penalty only to valid land
+            suitability[valid_land] -= normalized_slope[valid_land] * 2.0
+
+        # 3. Add noise for variety, only to valid land
+        settlement_noise_map = self._numba_generate_noise_map(
+            self.x_range, self.y_range, self.settlement_perm, self.settlement_grad3,
+            scale=20.0, octaves=4, persistence=0.5, lacunarity=2.0
+        )
+        suitability[valid_land] += ((settlement_noise_map[valid_land] + 1.0) / 2.0) * 0.3
+
+        # 4. Find best locations
+        # Flatten and get indices of top N candidates
+        flat_suitability = suitability.flatten()
+        # Use argpartition for efficiency - find the top N without a full sort
+        num_candidates = min(len(flat_suitability), num_settlements * 10) # Look in top candidates
+        if num_candidates <= 0: return
+
+        candidate_indices = np.argpartition(flat_suitability, -num_candidates)[-num_candidates:]
+        
+        # Ensure minimum distance between settlements
+        min_dist = math.sqrt(self.x_range * self.y_range) / (num_settlements * 0.5 + 10)
+        min_dist_sq = min_dist**2
+
+        self.settlements = []
+        
+        # Sort candidates by suitability
+        sorted_candidates = candidate_indices[np.argsort(flat_suitability[candidate_indices])][::-1]
+
+        name_fragments = THEME_NAME_FRAGMENTS.get(theme, THEME_NAME_FRAGMENTS['High Fantasy'])
+        
+        for idx in sorted_candidates:
+            if len(self.settlements) >= num_settlements:
+                break
+
+            x, y = np.unravel_index(idx, (self.x_range, self.y_range))
+            
+            # Final check to ensure the chosen point is valid land
+            if not valid_land[x, y]:
+                continue
+            
+            is_far_enough = True
+            for existing_settlement in self.settlements:
+                ex, ey = existing_settlement['x'], existing_settlement['y']
+                dist_sq = (x - ex)**2 + (y - ey)**2
+                if dist_sq < min_dist_sq:
+                    is_far_enough = False
+                    break
+            
+            if is_far_enough:
+                # Generate a thematic name
+                name = random.choice(name_fragments['prefixes']) + random.choice(name_fragments['suffixes'])
+                settlement_type = random.choice(name_fragments['types'])
+                self.settlements.append({'x': x, 'y': y, 'name': name, 'type': settlement_type})
+    
     def create_image(self):
         if self.color_map is None: return None
         
