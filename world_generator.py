@@ -178,6 +178,7 @@ class FractalWorldGenerator:
         
         # Civilization data
         self.settlements = []
+        self.natural_features = {}
 
     def set_ice_seed(self, seed):
         self.ice_noise = SimplexNoise(seed=seed)
@@ -409,7 +410,6 @@ class FractalWorldGenerator:
         temp_map = self.world_map.copy()
         temp_map[temp_map == self.INT_MIN_PLACEHOLDER] = 0
         
-        # Reverted to original heightmap generation logic
         self.world_map = np.cumsum(temp_map, axis=1)
         
         self._apply_erosion(self.params.get('erosion'))
@@ -421,7 +421,11 @@ class FractalWorldGenerator:
             self.params.get('map_style', 'Biome')
         )
         
-        if self.progress_callback: self.progress_callback(95, "Creating image...")
+        # --- POI Generation ---
+        self.natural_features = self.generate_natural_features()
+        self.generate_settlements()
+        
+        if self.progress_callback: self.progress_callback(99, "Creating image...")
         self.pil_image = self.create_image()
         
         if self.progress_callback: self.progress_callback(100, "Done.")
@@ -448,7 +452,6 @@ class FractalWorldGenerator:
         
         water_min, water_max = min_z, water_level_threshold
         if water_max == water_min: water_max = water_min + 1
-        # FIX: Apply water coloring to the correct mask (water_mask)
         self.color_map[water_mask] = 1 + np.floor(6.99 * (self.world_map[water_mask] - water_min) / (water_max - water_min))
 
         land_min, land_max = water_level_threshold, max_z
@@ -464,17 +467,12 @@ class FractalWorldGenerator:
         self._apply_ice_caps(percent_ice)
 
     def _calculate_distance_to_water(self, land_mask):
-        """
-        Calculates the distance from each land pixel to the nearest water pixel
-        using a Breadth-First Search (BFS) algorithm.
-        """
         if self.progress_callback: self.progress_callback(96, "Placing settlements: Calculating water distance...")
         
         x_range, y_range = self.x_range, self.y_range
         distance_map = np.full(land_mask.shape, np.inf, dtype=np.float32)
         queue = deque()
 
-        # Efficiently find all land pixels adjacent to water (the "coast") to seed the BFS
         water_mask = ~land_mask
         coast_mask = (
             (np.roll(water_mask, 1, axis=0) & land_mask) |
@@ -483,23 +481,17 @@ class FractalWorldGenerator:
             (np.roll(water_mask, -1, axis=1) & land_mask)
         )
         
-        # Initialize the queue with all coastal pixels at distance 1
         coast_pixels = np.argwhere(coast_mask)
         for x, y in coast_pixels:
             distance_map[x, y] = 1
             queue.append(((x, y), 1))
 
-        # Perform BFS from the coast
         visited = set(map(tuple, coast_pixels))
         
         while queue:
             (x, y), dist = queue.popleft()
-            
-            # Check neighbors
             for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
-                nx, ny = (x + dx), y + dy # Horizontal wrapping is handled later if needed
-
-                # Wrap horizontally for seamless world
+                nx, ny = (x + dx), y + dy
                 nx = nx % x_range
                 
                 if 0 <= ny < y_range and land_mask[nx, ny] and (nx, ny) not in visited:
@@ -510,23 +502,14 @@ class FractalWorldGenerator:
         return distance_map
 
     def generate_settlements(self):
-        """
-        Generates settlement locations based on a more realistic suitability model,
-        considering biome type, proximity to water, altitude, and slope.
-        """
-        if self.world_map is None or self.land_mask is None:
-            return
-
+        if self.world_map is None or self.land_mask is None: return
         num_settlements = self.params['num_settlements']
-        theme = self.params.get('theme', 'High Fantasy')
         if num_settlements == 0:
             self.settlements = []
             return
 
-        if self.progress_callback:
-            self.progress_callback(96, "Placing settlements: Calculating suitability...")
+        if self.progress_callback: self.progress_callback(98, "Placing settlements: Calculating suitability...")
             
-        # 1. Start with a base suitability score determined by the biome.
         BIOME_SUITABILITY = {
             'temperate_forest': 1.0, 'temperate_rainforest': 0.9,
             'shrubland': 0.8, 'savanna': 0.7,
@@ -534,51 +517,40 @@ class FractalWorldGenerator:
             'taiga': 0.4, 'desert': 0.2, 'tundra': 0.1
         }
         
-        # Create a map of suitability scores based on the biome of each pixel
         suitability = np.full(self.world_map.shape, -1.0, dtype=np.float32)
         for name, props in BIOME_DEFINITIONS.items():
             if name in BIOME_SUITABILITY:
-                # Get all color indexes for this biome
                 start_idx, end_idx = props['idx'], props['idx'] + props.get('shades', 1)
                 biome_mask = (self.color_map >= start_idx) & (self.color_map < end_idx)
                 suitability[biome_mask] = BIOME_SUITABILITY[name]
 
-        # 2. Add a strong bonus for proximity to water.
         if np.any(self.land_mask):
             distance_to_water = self._calculate_distance_to_water(self.land_mask)
-            # Apply a bonus, diminishing with distance. Max bonus of 0.8 for coastlines.
             water_bonus_mask = np.isfinite(distance_to_water)
             suitability[water_bonus_mask] += 0.8 / (distance_to_water[water_bonus_mask] ** 0.5)
 
-        # Create a mask for all valid settlement locations (anywhere with a base score)
         valid_land = suitability > 0
         
-        # 3. Penalize high altitude on valid land
         land_altitudes = self.world_map[valid_land]
         if land_altitudes.size > 0:
             min_land_alt, max_land_alt = np.min(land_altitudes), np.max(land_altitudes)
             if max_land_alt > min_land_alt:
                 normalized_land_alt = (self.world_map[valid_land] - min_land_alt) / (max_land_alt - min_land_alt)
-                suitability[valid_land] -= normalized_land_alt * 0.7 # Increased altitude penalty
+                suitability[valid_land] -= normalized_land_alt * 0.7
 
-        # 4. Penalize steep slopes on valid land
         grad_x, grad_y = np.gradient(self.world_map.astype(np.float32))
         slope = np.sqrt(grad_x**2 + grad_y**2)
         if np.max(slope) > 0:
             normalized_slope = slope / np.max(slope)
-            suitability[valid_land] -= normalized_slope[valid_land] * 1.5 # Adjusted slope penalty
+            suitability[valid_land] -= normalized_slope[valid_land] * 1.5
 
-        # 5. Add noise for variety, only to valid land
         settlement_noise_map = self._numba_generate_noise_map(
             self.x_range, self.y_range, self.settlement_perm, self.settlement_grad3,
             scale=20.0, octaves=4, persistence=0.5, lacunarity=2.0
         )
-        suitability[valid_land] += ((settlement_noise_map[valid_land] + 1.0) / 2.0) * 0.2 # Reduced noise influence
-
-        # Any location that fell below zero suitability is now invalid.
+        suitability[valid_land] += ((settlement_noise_map[valid_land] + 1.0) / 2.0) * 0.2
         suitability[suitability < 0] = -9999.0
 
-        # 6. Find the best locations from the final suitability map
         flat_suitability = suitability.flatten()
         num_candidates = min(len(flat_suitability[flat_suitability > -9999.0]), num_settlements * 20)
         if num_candidates <= 0:
@@ -586,51 +558,130 @@ class FractalWorldGenerator:
             return
 
         candidate_indices = np.argpartition(flat_suitability, -num_candidates)[-num_candidates:]
-        
         min_dist = math.sqrt(self.x_range * self.y_range) / (num_settlements * 0.5 + 10)
         min_dist_sq = min_dist**2
 
         self.settlements = []
-        
-        # Sort candidates by suitability
         sorted_candidates = candidate_indices[np.argsort(flat_suitability[candidate_indices])][::-1]
-
-        name_fragments = THEME_NAME_FRAGMENTS.get(theme, THEME_NAME_FRAGMENTS['High Fantasy'])
+        name_fragments = THEME_NAME_FRAGMENTS.get(self.params.get('theme', 'High Fantasy'))
         
-        if self.progress_callback: self.progress_callback(98, "Placing settlements: Finalizing locations...")
-
         for idx in sorted_candidates:
-            if len(self.settlements) >= num_settlements:
-                break
-
+            if len(self.settlements) >= num_settlements: break
             x, y = np.unravel_index(idx, (self.x_range, self.y_range))
             
             is_far_enough = True
-            for existing_settlement in self.settlements:
-                ex, ey = existing_settlement['x'], existing_settlement['y']
-                # Account for horizontal wrapping when checking distance
-                dx = abs(x - ex)
-                if dx > self.x_range / 2:
-                    dx = self.x_range - dx
+            for ex_settlement in self.settlements:
+                ex, ey = ex_settlement['x'], ex_settlement['y']
+                dx = abs(x - ex); dx = min(dx, self.x_range - dx)
                 dist_sq = dx**2 + (y - ey)**2
-
                 if dist_sq < min_dist_sq:
-                    is_far_enough = False
-                    break
+                    is_far_enough = False; break
             
             if is_far_enough:
                 name = random.choice(name_fragments['prefixes']) + random.choice(name_fragments['suffixes'])
-                settlement_type = random.choice(name_fragments['types'])
-                self.settlements.append({'x': x, 'y': y, 'name': name, 'type': settlement_type})
+                stype = random.choice(name_fragments['types'])
+                self.settlements.append({'x': x, 'y': y, 'name': name, 'type': 'settlement', 'stype': stype})
     
+    def _find_features(self, mask, min_size=50):
+        features = []
+        visited = np.zeros_like(mask, dtype=bool)
+        x_range, y_range = self.x_range, self.y_range
+
+        for y_start in range(y_range):
+            for x_start in range(x_range):
+                if mask[x_start, y_start] and not visited[x_start, y_start]:
+                    feature_coords = []
+                    queue = deque([(x_start, y_start)])
+                    visited[x_start, y_start] = True
+                    
+                    while queue:
+                        px, py = queue.popleft()
+                        feature_coords.append((px, py))
+                        for dx, dy in [(0,1), (0,-1), (1,0), (-1,0)]:
+                            nx, ny = (px + dx) % x_range, py + dy
+                            if 0 <= ny < y_range and mask[nx, ny] and not visited[nx, ny]:
+                                visited[nx, ny] = True
+                                queue.append((nx, ny))
+                    
+                    if len(feature_coords) >= min_size:
+                        coords_arr = np.array(feature_coords)
+                        center_x, center_y = np.mean(coords_arr, axis=0).astype(int)
+                        if not mask[center_x, center_y]:
+                            distances = np.sum((coords_arr - [center_x, center_y])**2, axis=1)
+                            center_x, center_y = coords_arr[np.argmin(distances)]
+                        features.append({'size': len(feature_coords), 'center': (center_x, center_y)})
+        
+        features.sort(key=lambda f: f['size'], reverse=True)
+        return features
+
+    def generate_natural_features(self):
+        if self.world_map is None: return {}
+        if self.progress_callback: self.progress_callback(97, "Naming natural features...")
+
+        num_features = self.params.get('num_features', 10)
+        peaks, areas, bays = [], [], []
+
+        # 1. Name Mountain Peaks
+        if num_features > 0:
+            land_heights = self.world_map.copy().astype(np.float32)
+            land_heights[~self.land_mask] = -np.inf
+            num_candidates = num_features * 20
+            candidate_indices = np.argpartition(land_heights.flatten(), -num_candidates)[-num_candidates:]
+            min_dist_sq = (self.x_range / (num_features * 1.5 + 10))**2
+            sorted_candidates = candidate_indices[np.argsort(land_heights.flatten()[candidate_indices])][::-1]
+            for idx in sorted_candidates:
+                if len(peaks) >= num_features: break
+                px, py = np.unravel_index(idx, land_heights.shape)
+                if all((abs(px - p['x']) % self.x_range)**2 + (py - p['y'])**2 > min_dist_sq for p in peaks):
+                    peaks.append({'x': px, 'y': py, 'name': f"Mount {random.choice(THEME_NAME_FRAGMENTS['High Fantasy']['suffixes']).capitalize()}", 'type': 'peak'})
+
+        # 2. Name Biome/Water Regions
+        min_area_size = int(self.x_range * self.y_range * 0.01)
+        # Land regions
+        for biome_name in ['desert', 'tundra', 'jungle', 'forest']:
+            if biome_name == 'jungle': props = BIOME_DEFINITIONS['tropical_rainforest']
+            elif biome_name == 'forest': props = BIOME_DEFINITIONS['temperate_forest']
+            elif biome_name in BIOME_DEFINITIONS: props = BIOME_DEFINITIONS[biome_name]
+            else: continue
+            mask = (self.color_map >= props['idx']) & (self.color_map < props['idx'] + props.get('shades', 1))
+            if np.sum(mask) < min_area_size: continue
+            for area in self._find_features(mask, min_size=min_area_size)[:2]:
+                area.update({'name': f"The {random.choice(THEME_NAME_FRAGMENTS['High Fantasy']['prefixes'])}{random.choice(THEME_NAME_FRAGMENTS['High Fantasy']['suffixes'])} {biome_name.title()}", 'type': 'area'})
+                areas.append(area)
+
+        # Water regions
+        water_bodies = self._find_features(~self.land_mask, min_size=min_area_size)
+        if len(water_bodies) > 1:
+            for i, area in enumerate(water_bodies[1:4]):
+                name = f"The {random.choice(THEME_NAME_FRAGMENTS['High Fantasy']['prefixes'])} Sea" if area['size'] > min_area_size * 5 else f"Lake {random.choice(THEME_NAME_FRAGMENTS['High Fantasy']['prefixes'])}"
+                area.update({'name': name, 'type': 'area'})
+                areas.append(area)
+
+        # 3. Name Bays and Gulfs
+        if num_features > 0:
+            coast_mask = (np.roll(~self.land_mask, 1, axis=0) & self.land_mask) | (np.roll(~self.land_mask, -1, axis=0) & self.land_mask) | (np.roll(~self.land_mask, 1, axis=1) & self.land_mask) | (np.roll(~self.land_mask, -1, axis=1) & self.land_mask)
+            coast_points = np.argwhere(coast_mask)
+            if coast_points.size > 0:
+                land_ratio = {}
+                for x, y in coast_points[np.random.choice(len(coast_points), size=min(len(coast_points), 500), replace=False)]:
+                    hood = self.land_mask[max(0, x-20):x+20, max(0, y-20):y+20]
+                    ratio = np.sum(hood) / hood.size if hood.size > 0 else 0
+                    if ratio > 0.4: land_ratio[(x, y)] = ratio
+                
+                sorted_bays = sorted(land_ratio.keys(), key=lambda p: land_ratio[p], reverse=True)
+                min_dist_sq = (self.x_range / (num_features * 1.5 + 10))**2
+                for bx, by in sorted_bays:
+                    if len(bays) >= num_features: break
+                    if all((abs(bx - b['x']) % self.x_range)**2 + (by - b['y'])**2 > min_dist_sq for b in bays):
+                        bays.append({'x': bx, 'y': by, 'name': f"Bay of {random.choice(THEME_NAME_FRAGMENTS['High Fantasy']['prefixes'])}", 'type': 'bay'})
+
+        return {'peaks': peaks, 'areas': areas, 'bays': bays}
+
     def create_image(self):
         if self.color_map is None: return None
-        
         clipped_color_map = np.clip(self.color_map, 0, len(self.palette) - 1)
-        
         rgb_map = np.zeros((self.y_range, self.x_range, 3), dtype=np.uint8)
         for i, color in enumerate(self.palette):
             mask = clipped_color_map.T == i
             rgb_map[mask] = color
-            
         return Image.fromarray(rgb_map, 'RGB')

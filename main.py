@@ -40,8 +40,11 @@ class App(tk.Tk):
         
         # --- Layer Management System ---
         self.layers = {}
-        self.layer_visibility = {}
-        self.cached_globe_source_image = None
+        self.layer_visibility = {
+            'Settlements': tk.BooleanVar(value=True),
+            'Placemarks': tk.BooleanVar(value=True),
+            'Features': tk.BooleanVar(value=True)
+        }
         
         self.adding_placemark = tk.BooleanVar(value=False)
         
@@ -81,12 +84,14 @@ class App(tk.Tk):
             'simulation_frames': tk.IntVar(value=20),
             'theme': tk.StringVar(value='High Fantasy'), 
             'num_settlements': tk.IntVar(value=50),
+            'num_features': tk.IntVar(value=10) # New parameter for POIs
         }
         self._create_control_widgets()
         self.tooltip = MapTooltip(self)
         self.canvas.bind("<Configure>", self.redraw_canvas)
         self.canvas.bind("<MouseWheel>", self._on_zoom)
-        self.canvas.bind("<ButtonPress-1>", self._on_canvas_press)
+        self.canvas.bind("<Button-1>", self._on_canvas_press)
+        self.canvas.bind("<Button-3>", self._on_right_click) # Right-click to edit
         self.canvas.bind("<ButtonRelease-1>", self._on_pan_end)
         self.canvas.bind("<B1-Motion>", self._on_pan_move)
         self.canvas.bind("<Motion>", self._on_map_hover)
@@ -135,7 +140,7 @@ class App(tk.Tk):
         wind_combo.grid(row=c_row, column=0, columnspan=2, sticky='ew', padx=5, pady=(0,5)); c_row += 1
 
         # --- Civilization Parameters ---
-        civ_frame = ttk.Labelframe(self.controls_frame, text="Civilization")
+        civ_frame = ttk.Labelframe(self.controls_frame, text="Civilization & Features")
         civ_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
         civ_frame.grid_columnconfigure(1, weight=1)
         
@@ -145,6 +150,7 @@ class App(tk.Tk):
                                    values=['High Fantasy', 'Sci-Fi', 'Post-Apocalyptic'], state="readonly")
         theme_combo.grid(row=civ_row, column=0, columnspan=2, sticky='ew', padx=5, pady=(0,5)); civ_row += 1
         self._create_slider_widget("Settlements:", self.params['num_settlements'], 0, 500, civ_row, master=civ_frame); civ_row += 1
+        self._create_slider_widget("Features:", self.params['num_features'], 0, 50, civ_row, master=civ_frame); civ_row += 1
 
         # --- View and Display ---
         view_frame = ttk.Labelframe(self.controls_frame, text="Display")
@@ -241,24 +247,18 @@ class App(tk.Tk):
         self.on_projection_change()
 
     def _create_layer_widgets(self):
-        # Clear existing widgets if any
+        """Creates the layer visibility control widgets."""
         for widget in self.layers_frame.winfo_children():
             widget.destroy()
 
-        self.layer_visibility = {
-            'Settlements': tk.BooleanVar(value=True),
-            'Placemarks': tk.BooleanVar(value=True),
-        }
-        
-        # Bind toggling redraw to each variable
         for name, var in self.layer_visibility.items():
-            var.trace_add('write', lambda *args, n=name: self._toggle_layer_visibility(n))
+            var.trace_add('write', lambda *_, n=name: self.redraw_canvas())
 
-        # Create checkbuttons
         ttk.Checkbutton(self.layers_frame, text="Settlements", variable=self.layer_visibility['Settlements']).grid(row=0, column=0, sticky='w', padx=5)
+        ttk.Checkbutton(self.layers_frame, text="Features", variable=self.layer_visibility['Features']).grid(row=1, column=0, sticky='w', padx=5)
         
         placemark_frame = ttk.Frame(self.layers_frame)
-        placemark_frame.grid(row=1, column=0, columnspan=2, sticky='w')
+        placemark_frame.grid(row=2, column=0, columnspan=2, sticky='w')
         ttk.Checkbutton(placemark_frame, text="Placemarks", variable=self.layer_visibility['Placemarks']).pack(side=tk.LEFT, padx=5)
         ttk.Checkbutton(placemark_frame, text="Add Placemark", variable=self.adding_placemark, command=self.toggle_placemark_mode).pack(side=tk.LEFT, padx=5)
 
@@ -339,8 +339,68 @@ class App(tk.Tk):
         if img_x is not None:
             if 'placemarks' not in self.layers:
                 self.layers['placemarks'] = []
-            self.layers['placemarks'].append({'name': placemark_name, 'x': img_x, 'y': img_y})
+            self.layers['placemarks'].append({'name': placemark_name, 'x': img_x, 'y': img_y, 'type': 'placemark'})
             self.redraw_canvas()
+
+    def _on_right_click(self, event):
+        """Finds the nearest editable feature and opens a dialog to rename it."""
+        if self.generator is None: return
+
+        canvas_x, canvas_y = event.x, event.y
+        
+        all_items = []
+        if self.layers.get('settlements'): all_items.extend(self.layers['settlements'])
+        if self.layers.get('placemarks'): all_items.extend(self.layers['placemarks'])
+        if self.layers.get('natural_features'):
+            for key in ['peaks', 'bays']:
+                if self.layers['natural_features'].get(key):
+                    all_items.extend(self.layers['natural_features'][key])
+            if self.layers['natural_features'].get('areas'):
+                for area in self.layers['natural_features']['areas']:
+                    area_proxy = area.copy()
+                    area_proxy['x'], area_proxy['y'] = area['center']
+                    all_items.append(area_proxy)
+        
+        if not all_items: return
+
+        min_dist_sq = float('inf')
+        closest_item_proxy = None
+        
+        for item in all_items:
+            item_canvas_x, item_canvas_y = self.image_to_canvas_coords(item['x'], item['y'])
+            if item_canvas_x is not None:
+                dist_sq = (canvas_x - item_canvas_x)**2 + (canvas_y - item_canvas_y)**2
+                if dist_sq < min_dist_sq:
+                    min_dist_sq = dist_sq
+                    closest_item_proxy = item
+
+        if closest_item_proxy and min_dist_sq < 20**2:
+            original_item = self.find_original_item(closest_item_proxy)
+            if original_item:
+                new_name = simpledialog.askstring("Edit Name", "Enter new name:", initialvalue=original_item['name'], parent=self)
+                if new_name:
+                    original_item['name'] = new_name
+                    self.redraw_canvas()
+
+    def find_original_item(self, item_proxy):
+        """Finds the original dictionary for a given item proxy."""
+        proxy_type = item_proxy.get('type')
+        if not proxy_type: return None
+
+        if proxy_type == 'settlement':
+            for item in self.layers.get('settlements', []):
+                if item['x'] == item_proxy['x'] and item['y'] == item_proxy['y']: return item
+        elif proxy_type == 'placemark':
+            for item in self.layers.get('placemarks', []):
+                if item['x'] == item_proxy['x'] and item['y'] == item_proxy['y']: return item
+        else: # Natural features
+            for key in ['peaks', 'areas', 'bays']:
+                for item in self.layers.get('natural_features', {}).get(key, []):
+                    if 'center' in item and item['center'][0] == item_proxy['x'] and item['center'][1] == item_proxy['y']:
+                        return item
+                    elif 'center' not in item and item['x'] == item_proxy['x'] and item['y'] == item_proxy['y']:
+                        return item
+        return None
 
     def _on_map_hover(self, event):
         if self.generator is None or self.generator.color_map is None:
@@ -407,14 +467,12 @@ class App(tk.Tk):
         self.cached_globe_source_image = None # Invalidate cache
         params_dict = {key: var.get() for key, var in self.params.items() if key != 'world_size_preset'}
         
-        # Convert world size preset string to circumference value
         size_preset = self.params['world_size_preset'].get()
         circumference_map = {
             'Kingdom (~1,600 km)': 1600.0,
             'Region (~6,400 km)': 6400.0,
             'Continent (~16,000 km)': 16000.0,
         }
-        # --- FIX: Store circumference in the app instance ---
         self.world_circumference_km = circumference_map.get(size_preset, 6400.0)
         params_dict['world_circumference_km'] = self.world_circumference_km
 
@@ -429,15 +487,12 @@ class App(tk.Tk):
         self.generator = FractalWorldGenerator(params_dict, self.palette, self.update_generation_progress)
         self.pil_image = self.generator.generate()
         
-        # After base generation, generate civilization layers
-        self.generator.generate_settlements()
-        
         self.after(0, self.finalize_generation)
 
     def finalize_generation(self):
-        # Populate layer data from the generator
         self.layers['settlements'] = self.generator.settlements
-        self.cached_globe_source_image = None # Invalidate cache
+        self.layers['natural_features'] = self.generator.natural_features
+        self.cached_globe_source_image = None
         
         self.redraw_canvas()
         self.set_ui_state(is_generating=False)
@@ -449,69 +504,89 @@ class App(tk.Tk):
             self.status_label.config(text=text)
         ))
 
+    def _create_text_with_outline(self, x, y, text, **kwargs):
+        """Helper to draw text with an outline on the Tkinter canvas."""
+        outline_color = 'black'
+        # Create a copy of the kwargs for the outline, and set the fill color
+        outline_kwargs = kwargs.copy()
+        outline_kwargs['fill'] = outline_color
+        
+        # Draw outline text (the "stroke")
+        self.canvas.create_text(x-1, y, text=text, **outline_kwargs)
+        self.canvas.create_text(x+1, y, text=text, **outline_kwargs)
+        self.canvas.create_text(x, y-1, text=text, **outline_kwargs)
+        self.canvas.create_text(x, y+1, text=text, **outline_kwargs)
+
+        # Draw main text on top using the original kwargs
+        self.canvas.create_text(x, y, text=text, **kwargs)
+
     def _draw_layers_on_image(self, image):
         """Draws vector layers directly onto the supplied PIL Image object."""
-        draw = ImageDraw.Draw(image)
+        draw = ImageDraw.Draw(image, 'RGBA')
         
-        # Load a font
         try:
-            settlement_font = ImageFont.truetype("arial.ttf", size=9)
-            placemark_font = ImageFont.truetype("arial.ttf", size=10)
+            font_l = ImageFont.truetype("arialbd.ttf", size=14)
+            font_m = ImageFont.truetype("arial.ttf", size=11)
+            font_s = ImageFont.truetype("arial.ttf", size=9)
         except IOError:
-            settlement_font = ImageFont.load_default()
-            placemark_font = ImageFont.load_default()
+            font_l = ImageFont.load_default()
+            font_m = ImageFont.load_default()
+            font_s = ImageFont.load_default()
+
+        # Draw Features
+        if self.layer_visibility['Features'].get() and 'natural_features' in self.layers:
+            for area in self.layers['natural_features'].get('areas', []):
+                cx, cy = self.image_to_canvas_coords(*area['center'])
+                if cx is not None: draw.text((cx, cy), area['name'], font=font_l, fill=(255, 255, 220, 192), anchor="mm", stroke_width=2, stroke_fill=(0,0,0,128))
+            for bay in self.layers['natural_features'].get('bays', []):
+                bx, by = self.image_to_canvas_coords(bay['x'], bay['y'])
+                if bx is not None: draw.text((bx, by), bay['name'], font=font_m, fill=(200, 220, 255, 192), anchor="mm", stroke_width=2, stroke_fill=(0,0,0,128))
+            for peak in self.layers['natural_features'].get('peaks', []):
+                px, py = self.image_to_canvas_coords(peak['x'], peak['y'])
+                if px is not None:
+                    draw.polygon([(px, py-6), (px-6, py+5), (px+6, py+5)], fill=(200, 200, 200, 128), outline='black')
+                    draw.text((px, py - 8), peak['name'], font=font_m, fill="white", anchor="ms", stroke_width=1, stroke_fill="black")
 
         # Draw Settlements
-        if self.layer_visibility.get('Settlements', tk.BooleanVar(value=True)).get() and 'settlements' in self.layers:
+        if self.layer_visibility['Settlements'].get() and 'settlements' in self.layers:
             icon_radius = 3
             for settlement in self.layers['settlements']:
-                # Use image_to_canvas_coords to find where the settlement should be on the final image
                 canvas_x, canvas_y = self.image_to_canvas_coords(settlement['x'], settlement['y'])
-                if canvas_x is not None and canvas_y is not None:
-                    box = (canvas_x - icon_radius, canvas_y - icon_radius, canvas_x + icon_radius, canvas_y + icon_radius)
-                    draw.ellipse(box, fill='white', outline='black')
-                    # Draw text label
-                    text_pos = (canvas_x + icon_radius + 2, canvas_y)
-                    draw.text(text_pos, settlement['name'], font=settlement_font, fill="white", anchor="lm")
+                if canvas_x is not None:
+                    draw.ellipse((canvas_x - icon_radius, canvas_y - icon_radius, canvas_x + icon_radius, canvas_y + icon_radius), fill='white', outline='black')
+                    draw.text((canvas_x + icon_radius + 2, canvas_y), settlement['name'], font=font_s, fill="white", anchor="lm", stroke_width=1, stroke_fill="black")
 
         # Draw Placemarks
-        if self.layer_visibility.get('Placemarks', tk.BooleanVar(value=False)).get() and 'placemarks' in self.layers:
+        if self.layer_visibility['Placemarks'].get() and 'placemarks' in self.layers:
             icon_radius = 4
             for pm in self.layers['placemarks']:
                 canvas_x, canvas_y = self.image_to_canvas_coords(pm['x'], pm['y'])
-                if canvas_x is not None and canvas_y is not None:
-                    box = (canvas_x - icon_radius, canvas_y - icon_radius, canvas_x + icon_radius, canvas_y + icon_radius)
-                    draw.ellipse(box, fill='red', outline='black')
-                    draw.text((canvas_x + icon_radius + 2, canvas_y), pm['name'], font=placemark_font, fill="white", anchor="lm")
-    
+                if canvas_x is not None:
+                    draw.ellipse((canvas_x - icon_radius, canvas_y - icon_radius, canvas_x + icon_radius, canvas_y + icon_radius), fill='red', outline='black')
+                    draw.text((canvas_x + icon_radius + 2, canvas_y), pm['name'], font=font_m, fill="white", anchor="lm", stroke_width=1, stroke_fill="black")
+
     def _draw_scale_bar(self):
         """Draws a dynamic scale bar on the canvas for the 2D view."""
         self.canvas.delete("scale_bar")
         canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
 
-        if canvas_w <= 1 or self.generator is None:
-            return
+        if canvas_w <= 1 or self.generator is None: return
 
-        # --- FIX: Read circumference from the app instance attribute ---
         circumference_km = self.world_circumference_km
         zoom = self.zoom
         img_h = self.generator.y_range
         
-        # Calculate latitude at the center of the view to account for projection distortion
         center_y_map_px = self.view_offset[1] + (img_h / zoom) / 2
         center_lat_rad = (center_y_map_px / img_h - 0.5) * math.pi
         
-        # Calculate km per canvas pixel at the view's central latitude
+        if math.cos(center_lat_rad) <= 0: return
         km_per_canvas_pixel = (circumference_km * math.cos(center_lat_rad)) / (zoom * canvas_w)
 
-        if km_per_canvas_pixel <= 0:
-            return
+        if km_per_canvas_pixel <= 0: return
 
-        # Find a "nice" distance and pixel width for the bar
         target_bar_width_px = canvas_w / 5
         target_distance_km = target_bar_width_px * km_per_canvas_pixel
         
-        # Algorithm to find a "nice" round number for the scale distance
         if target_distance_km == 0: return
         magnitude = 10 ** math.floor(math.log10(target_distance_km))
         residual = target_distance_km / magnitude
@@ -523,15 +598,14 @@ class App(tk.Tk):
 
         final_bar_width_px = nice_distance_km / km_per_canvas_pixel
 
-        # Draw the bar in the bottom-left corner
         margin = 20
         bar_x = margin
         bar_y = canvas_h - margin
         
+        self._create_text_with_outline(bar_x + final_bar_width_px / 2, bar_y - 10, text=f"{int(nice_distance_km)} km", fill="white", tags="scale_bar", anchor="s")
         self.canvas.create_line(bar_x, bar_y - 5, bar_x, bar_y + 5, fill="white", tags="scale_bar", width=2)
         self.canvas.create_line(bar_x, bar_y, bar_x + final_bar_width_px, bar_y, fill="white", tags="scale_bar", width=2)
         self.canvas.create_line(bar_x + final_bar_width_px, bar_y - 5, bar_x + final_bar_width_px, bar_y + 5, fill="white", tags="scale_bar", width=2)
-        self.canvas.create_text(bar_x + final_bar_width_px / 2, bar_y - 10, text=f"{int(nice_distance_km)} km", fill="white", tags="scale_bar", anchor="s")
 
     def redraw_canvas(self, event=None):
         if not hasattr(self, 'generator') or not self.generator or not self.generator.pil_image: return
@@ -542,28 +616,22 @@ class App(tk.Tk):
         projection = self.params['projection'].get()
 
         if projection == 'Orthographic':
-            # Render the base globe
             source_array = np.array(self.generator.pil_image.convert('RGB'))
             canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
             if canvas_w <= 1 or canvas_h <= 1: return
 
-            rot_y = self.params['rotation_y'].get()
-            rot_x = self.params['rotation_x'].get()
-
+            rot_y, rot_x = self.params['rotation_y'].get(), self.params['rotation_x'].get()
             new_img_array = render_globe(source_array, canvas_w, canvas_h, rot_y, rot_x, self.generator.x_range, self.generator.y_range)
-            final_image = Image.fromarray(new_img_array)
+            final_image = Image.fromarray(new_img_array).convert('RGBA')
             
-            # Draw layers directly onto the PIL image
             self._draw_layers_on_image(final_image)
             
-            # Display the final composite image
             self.tk_image = ImageTk.PhotoImage(final_image)
             self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image, tags="map_image")
 
         else: # Equirectangular view
             img_w, img_h = self.generator.pil_image.size
-            view_w = img_w / self.zoom
-            view_h = img_h / self.zoom
+            view_w, view_h = img_w / self.zoom, img_h / self.zoom
             
             x0 = self.view_offset[0]
             y0 = max(0, min(self.view_offset[1], img_h - view_h))
@@ -589,7 +657,6 @@ class App(tk.Tk):
             self.tk_image = ImageTk.PhotoImage(resized_image)
             self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image, tags="map_image")
             
-            # For 2D view, draw overlays and scale bar on the canvas
             self._draw_layers_on_canvas_2d()
             self._draw_scale_bar()
 
@@ -597,29 +664,37 @@ class App(tk.Tk):
         """Draws vector layers directly onto the canvas for the 2D view."""
         self.canvas.delete("overlay")
 
-        if self.layer_visibility.get('Settlements', tk.BooleanVar(value=True)).get() and 'settlements' in self.layers:
-            font_size = 9
+        # Draw Features
+        if self.layer_visibility['Features'].get() and 'natural_features' in self.layers:
+            for area in self.layers['natural_features'].get('areas', []):
+                cx, cy = self.image_to_canvas_coords(*area['center'])
+                if cx is not None: self._create_text_with_outline(cx, cy, text=area['name'], font=("Arial", 12, "italic"), fill="white", anchor="c", tags="overlay")
+            for bay in self.layers['natural_features'].get('bays', []):
+                bx, by = self.image_to_canvas_coords(bay['x'], bay['y'])
+                if bx is not None: self._create_text_with_outline(bx, by, text=bay['name'], font=("Arial", 10, "italic"), fill="#add8e6", anchor="c", tags="overlay")
+            for peak in self.layers['natural_features'].get('peaks', []):
+                px, py = self.image_to_canvas_coords(peak['x'], peak['y'])
+                if px is not None:
+                    self._create_text_with_outline(px, py - 8, text=peak['name'], font=("Arial", 9), fill="white", anchor="s", tags="overlay")
+                    self.canvas.create_text(px, py, text="▲", font=("Arial", 10), fill="white", tags="overlay")
+
+        # Draw Settlements
+        if self.layer_visibility['Settlements'].get() and 'settlements' in self.layers:
             icon_radius = 3
             for settlement in self.layers['settlements']:
                 canvas_x, canvas_y = self.image_to_canvas_coords(settlement['x'], settlement['y'])
-                if canvas_x is not None and canvas_y is not None:
-                    self.canvas.create_oval(canvas_x - icon_radius, canvas_y - icon_radius, 
-                                            canvas_x + icon_radius, canvas_y + icon_radius, 
-                                            fill='white', outline='black', tags="overlay")
-                    self.canvas.create_text(canvas_x + icon_radius + 2, canvas_y,
-                                            text=settlement['name'], anchor='w', font=("Arial", font_size), fill="white", tags="overlay")
+                if canvas_x is not None:
+                    self.canvas.create_oval(canvas_x - icon_radius, canvas_y - icon_radius, canvas_x + icon_radius, canvas_y + icon_radius, fill='white', outline='black', tags="overlay")
+                    self._create_text_with_outline(canvas_x + icon_radius + 2, canvas_y, text=settlement['name'], anchor='w', font=("Arial", 9), fill="white", tags="overlay")
 
-        if self.layer_visibility.get('Placemarks', tk.BooleanVar(value=False)).get() and 'placemarks' in self.layers:
-            font_size = 10
+        # Draw Placemarks
+        if self.layer_visibility['Placemarks'].get() and 'placemarks' in self.layers:
             icon_radius = 4
             for pm in self.layers['placemarks']:
                 canvas_x, canvas_y = self.image_to_canvas_coords(pm['x'], pm['y'])
-                if canvas_x is not None and canvas_y is not None:
-                    self.canvas.create_oval(canvas_x - icon_radius, canvas_y - icon_radius, 
-                                        canvas_x + icon_radius, canvas_y + icon_radius, 
-                                        fill='red', outline='black', tags="overlay")
-                    self.canvas.create_text(canvas_x + icon_radius + 2, canvas_y,
-                                        text=pm['name'], anchor='w', font=("Arial", font_size), fill="white", tags="overlay")
+                if canvas_x is not None:
+                    self.canvas.create_oval(canvas_x - icon_radius, canvas_y - icon_radius, canvas_x + icon_radius, canvas_y + icon_radius, fill='red', outline='black', tags="overlay")
+                    self._create_text_with_outline(canvas_x + icon_radius + 2, canvas_y, text=pm['name'], anchor='w', font=("Arial", 10), fill="white", tags="overlay")
 
     def image_to_canvas_coords(self, img_x, img_y):
         """Converts full map image coordinates to on-screen canvas coordinates for the current projection."""
@@ -737,8 +812,15 @@ class App(tk.Tk):
             self.canvas.config(cursor="")
 
     def save_image(self):
-        # This function will need to be re-implemented for the new rendering system
-        tk.messagebox.showinfo("Export Not Ready", "The export functionality is being updated.")
+        if not self.generator or not self.generator.pil_image: return
+        file_path = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG Image", "*.png"), ("All Files", "*.*")], title="Save Image As")
+        if not file_path: return
+        
+        # To save what's on screen, we need to regenerate the currently displayed image
+        current_image = self.canvas.postscript(colormode='color')
+        img = Image.open(io.BytesIO(current_image.encode('utf-8')))
+        img.save(file_path)
+
     def save_preset(self):
         params_to_save = {key: var.get() for key, var in self.params.items()}
         params_to_save['layers'] = self.layers
@@ -867,9 +949,7 @@ class App(tk.Tk):
                 self.simulation_frames.append(frame_data)
                 
                 self.generator.pil_image = frame_image
-                # The _composite_layers method was not provided, so it is commented out.
-                # frame_with_overlays = self._composite_layers(frame_image, is_export=True, export_label_size='Medium')
-                frame_with_overlays = frame_image # Placeholder
+                frame_with_overlays = frame_image 
                 self.after(0, self.redraw_canvas)
 
                 frame_with_overlays.save(os.path.join(save_dir, f"{base_filename}_{i+1:03d}.png"))
