@@ -179,6 +179,7 @@ class FractalWorldGenerator:
         # Civilization data
         self.settlements = []
         self.natural_features = {}
+        self.used_names = set()
 
     def set_ice_seed(self, seed):
         self.ice_noise = SimplexNoise(seed=seed)
@@ -422,6 +423,7 @@ class FractalWorldGenerator:
         )
         
         # --- POI Generation ---
+        self.used_names = set() # Reset used names for each generation
         self.natural_features = self.generate_natural_features()
         self.generate_settlements()
         
@@ -501,6 +503,29 @@ class FractalWorldGenerator:
         
         return distance_map
 
+    def _generate_fantasy_name(self, name_fragments, max_retries=10):
+        """Generates a unique fantasy name using various patterns."""
+        for _ in range(max_retries):
+            pattern = random.random()
+            name = ""
+            if pattern < 0.1 and 'single' in name_fragments and name_fragments['single']:
+                name = random.choice(name_fragments['single'])
+            elif pattern < 0.3:
+                name = f"{random.choice(name_fragments['prefixes'])}{random.choice(name_fragments['suffixes'])}"
+            elif pattern < 0.6:
+                name = f"{random.choice(name_fragments['prefixes'])}{random.choice(name_fragments.get('vowels', ['a']))}{random.choice(name_fragments['suffixes'])}"
+            else:
+                name = f"{random.choice(name_fragments['prefixes'])}{random.choice(name_fragments['suffixes'])}"
+
+            name = name.replace('--', '-').replace('\'\'', '\'').strip('-')
+            
+            if name not in self.used_names:
+                self.used_names.add(name)
+                return name.capitalize()
+
+        # Failsafe if a unique name isn't found
+        return f"{random.choice(name_fragments['prefixes'])}{random.choice(name_fragments['suffixes'])}".capitalize()
+
     def generate_settlements(self):
         if self.world_map is None or self.land_mask is None: return
         num_settlements = self.params['num_settlements']
@@ -563,7 +588,8 @@ class FractalWorldGenerator:
 
         self.settlements = []
         sorted_candidates = candidate_indices[np.argsort(flat_suitability[candidate_indices])][::-1]
-        name_fragments = THEME_NAME_FRAGMENTS.get(self.params.get('theme', 'High Fantasy'))
+        theme = self.params.get('theme', 'High Fantasy')
+        name_fragments = THEME_NAME_FRAGMENTS.get(theme, THEME_NAME_FRAGMENTS['High Fantasy'])
         
         for idx in sorted_candidates:
             if len(self.settlements) >= num_settlements: break
@@ -578,7 +604,7 @@ class FractalWorldGenerator:
                     is_far_enough = False; break
             
             if is_far_enough:
-                name = random.choice(name_fragments['prefixes']) + random.choice(name_fragments['suffixes'])
+                name = self._generate_fantasy_name(name_fragments)
                 stype = random.choice(name_fragments['types'])
                 self.settlements.append({'x': x, 'y': y, 'name': name, 'type': 'settlement', 'stype': stype})
     
@@ -609,7 +635,7 @@ class FractalWorldGenerator:
                         if not mask[center_x, center_y]:
                             distances = np.sum((coords_arr - [center_x, center_y])**2, axis=1)
                             center_x, center_y = coords_arr[np.argmin(distances)]
-                        features.append({'size': len(feature_coords), 'center': (center_x, center_y)})
+                        features.append({'size': len(feature_coords), 'center': (center_x, center_y), 'coords': coords_arr})
         
         features.sort(key=lambda f: f['size'], reverse=True)
         return features
@@ -618,64 +644,96 @@ class FractalWorldGenerator:
         if self.world_map is None: return {}
         if self.progress_callback: self.progress_callback(97, "Naming natural features...")
 
-        num_features = self.params.get('num_features', 10)
-        peaks, areas, bays = [], [], []
+        num_features_to_find = self.params.get('num_features', 10)
+        theme = self.params.get('theme', 'High Fantasy')
+        name_fragments = THEME_NAME_FRAGMENTS.get(theme, THEME_NAME_FRAGMENTS['High Fantasy'])
+        
+        features = {'peaks': [], 'ranges': [], 'areas': [], 'bays': []}
+        min_area_size = int(self.x_range * self.y_range * 0.005)
+        
+        # --- GUARANTEED FEATURES ---
+        
+        # 1. Name the main Ocean
+        water_bodies = self._find_features(~self.land_mask, min_size=1)
+        if water_bodies:
+            ocean = water_bodies.pop(0)
+            ocean_name = f"The {self._generate_fantasy_name(name_fragments)} {random.choice(name_fragments['ocean_suffixes'])}"
+            ocean.update({'name': ocean_name, 'type': 'ocean'})
+            features['areas'].append(ocean)
 
-        # 1. Name Mountain Peaks
-        if num_features > 0:
-            land_heights = self.world_map.copy().astype(np.float32)
-            land_heights[~self.land_mask] = -np.inf
-            num_candidates = num_features * 20
-            candidate_indices = np.argpartition(land_heights.flatten(), -num_candidates)[-num_candidates:]
-            min_dist_sq = (self.x_range / (num_features * 1.5 + 10))**2
-            sorted_candidates = candidate_indices[np.argsort(land_heights.flatten()[candidate_indices])][::-1]
-            for idx in sorted_candidates:
-                if len(peaks) >= num_features: break
-                px, py = np.unravel_index(idx, land_heights.shape)
-                if all((abs(px - p['x']) % self.x_range)**2 + (py - p['y'])**2 > min_dist_sq for p in peaks):
-                    peaks.append({'x': px, 'y': py, 'name': f"Mount {random.choice(THEME_NAME_FRAGMENTS['High Fantasy']['suffixes']).capitalize()}", 'type': 'peak'})
+        # 2. Name the main Mountain Range and its Peak
+        min_mountain_height = np.percentile(self.world_map[self.land_mask], 90) if np.any(self.land_mask) else 0
+        mountain_mask = (self.world_map >= min_mountain_height) & self.land_mask
+        mountain_ranges = self._find_features(mountain_mask, min_size=1)
+        if mountain_ranges:
+            main_range = mountain_ranges.pop(0)
+            range_name = f"The {self._generate_fantasy_name(name_fragments)} {random.choice(name_fragments['mountain_suffixes'])}"
+            main_range.update({'name': range_name, 'type': 'range'})
+            features['ranges'].append(main_range)
+            
+            range_coords = tuple(main_range['coords'].T)
+            range_heights = self.world_map[range_coords]
+            highest_point_idx = np.argmax(range_heights)
+            peak_x, peak_y = main_range['coords'][highest_point_idx]
+            peak_name = f"Mount {self._generate_fantasy_name(name_fragments)}"
+            features['peaks'].append({'x': peak_x, 'y': peak_y, 'name': peak_name, 'type': 'peak'})
+            
+        # --- SLIDER-DEPENDENT FEATURES ---
+        
+        feature_candidates = []
+        
+        # Add remaining water bodies as candidates
+        for body in water_bodies:
+            if body['size'] < min_area_size: continue
+            is_lake = np.all(self.land_mask[np.clip(body['center'][0] + [-1, 1], 0, self.x_range-1), body['center'][1]]) and \
+                      np.all(self.land_mask[body['center'][0], np.clip(body['center'][1] + [-1, 1], 0, self.y_range-1)])
+            name = f"Lake {self._generate_fantasy_name(name_fragments)}" if is_lake else f"The {self._generate_fantasy_name(name_fragments)} Sea"
+            b_type = 'lake' if is_lake else 'sea'
+            feature_candidates.append({'feature': body, 'name': name, 'type': b_type, 'category': 'areas'})
 
-        # 2. Name Biome/Water Regions
-        min_area_size = int(self.x_range * self.y_range * 0.01)
-        # Land regions
-        for biome_name in ['desert', 'tundra', 'jungle', 'forest']:
-            if biome_name == 'jungle': props = BIOME_DEFINITIONS['tropical_rainforest']
-            elif biome_name == 'forest': props = BIOME_DEFINITIONS['temperate_forest']
-            elif biome_name in BIOME_DEFINITIONS: props = BIOME_DEFINITIONS[biome_name]
-            else: continue
-            mask = (self.color_map >= props['idx']) & (self.color_map < props['idx'] + props.get('shades', 1))
-            if np.sum(mask) < min_area_size: continue
-            for area in self._find_features(mask, min_size=min_area_size)[:2]:
-                area.update({'name': f"The {random.choice(THEME_NAME_FRAGMENTS['High Fantasy']['prefixes'])}{random.choice(THEME_NAME_FRAGMENTS['High Fantasy']['suffixes'])} {biome_name.title()}", 'type': 'area'})
-                areas.append(area)
+        # Add remaining mountain ranges as candidates
+        for r in mountain_ranges:
+             if r['size'] < min_area_size: continue
+             name = f"The {self._generate_fantasy_name(name_fragments)} {random.choice(name_fragments['mountain_suffixes'])}"
+             feature_candidates.append({'feature': r, 'name': name, 'type': 'range', 'category': 'ranges'})
 
-        # Water regions
-        water_bodies = self._find_features(~self.land_mask, min_size=min_area_size)
-        if len(water_bodies) > 1:
-            for i, area in enumerate(water_bodies[1:4]):
-                name = f"The {random.choice(THEME_NAME_FRAGMENTS['High Fantasy']['prefixes'])} Sea" if area['size'] > min_area_size * 5 else f"Lake {random.choice(THEME_NAME_FRAGMENTS['High Fantasy']['prefixes'])}"
-                area.update({'name': name, 'type': 'area'})
-                areas.append(area)
+        # Add major biome areas as candidates
+        biome_types_to_name = { 'desert': ('The {} Desert', 'desert'), 'tropical_rainforest': ('The {} Jungle', 'jungle'), 'temperate_forest': ('The {} Forest', 'forest'), 'tundra': ('The {} Wastes', 'wastes')}
+        for biome_key, (name_template, type_key) in biome_types_to_name.items():
+            props = BIOME_DEFINITIONS[biome_key]
+            mask = (self.color_map_before_ice >= props['idx']) & (self.color_map_before_ice < props['idx'] + props.get('shades', 1))
+            if not np.any(mask): continue
+            biome_areas = self._find_features(mask, min_size=min_area_size)
+            for area in biome_areas:
+                 name = name_template.format(self._generate_fantasy_name(name_fragments))
+                 feature_candidates.append({'feature': area, 'name': name, 'type': type_key, 'category': 'areas'})
+        
+        # Sort all candidates by size (descending)
+        feature_candidates.sort(key=lambda x: x['feature']['size'], reverse=True)
+        
+        # Add features based on slider, avoiding overlaps
+        named_centers = [tuple(f['center']) for f in features['areas'] + features['ranges']]
+        min_dist_sq = (self.x_range / (num_features_to_find + 5))**2
 
-        # 3. Name Bays and Gulfs
-        if num_features > 0:
-            coast_mask = (np.roll(~self.land_mask, 1, axis=0) & self.land_mask) | (np.roll(~self.land_mask, -1, axis=0) & self.land_mask) | (np.roll(~self.land_mask, 1, axis=1) & self.land_mask) | (np.roll(~self.land_mask, -1, axis=1) & self.land_mask)
-            coast_points = np.argwhere(coast_mask)
-            if coast_points.size > 0:
-                land_ratio = {}
-                for x, y in coast_points[np.random.choice(len(coast_points), size=min(len(coast_points), 500), replace=False)]:
-                    hood = self.land_mask[max(0, x-20):x+20, max(0, y-20):y+20]
-                    ratio = np.sum(hood) / hood.size if hood.size > 0 else 0
-                    if ratio > 0.4: land_ratio[(x, y)] = ratio
-                
-                sorted_bays = sorted(land_ratio.keys(), key=lambda p: land_ratio[p], reverse=True)
-                min_dist_sq = (self.x_range / (num_features * 1.5 + 10))**2
-                for bx, by in sorted_bays:
-                    if len(bays) >= num_features: break
-                    if all((abs(bx - b['x']) % self.x_range)**2 + (by - b['y'])**2 > min_dist_sq for b in bays):
-                        bays.append({'x': bx, 'y': by, 'name': f"Bay of {random.choice(THEME_NAME_FRAGMENTS['High Fantasy']['prefixes'])}", 'type': 'bay'})
+        for cand in feature_candidates:
+            if len(features['areas']) + len(features['ranges']) >= num_features_to_find: break
+            
+            center = tuple(cand['feature']['center'])
+            if named_centers:
+                 dist_sq = min(np.sum((np.array(center) - np.array(c))**2) for c in named_centers)
+                 if dist_sq < min_dist_sq: continue
+            
+            cand['feature'].update({'name': cand['name'], 'type': cand['type']})
+            features[cand['category']].append(cand['feature'])
+            named_centers.append(center)
 
-        return {'peaks': peaks, 'areas': areas, 'bays': bays}
+        # Clean up coordinates from final feature list
+        for area_list in [features['areas'], features['ranges']]:
+            for area in area_list:
+                if 'coords' in area:
+                    del area['coords']
+
+        return features
 
     def create_image(self):
         if self.color_map is None: return None

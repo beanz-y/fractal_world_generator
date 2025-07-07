@@ -39,14 +39,18 @@ class App(tk.Tk):
         self.world_circumference_km = 1600.0 # Default value
         
         # --- Layer Management System ---
-        self.layers = {}
+        self.layers = {
+            'settlements': [],
+            'placemarks': [],
+            'natural_features': {'peaks': [], 'ranges': [], 'areas': [], 'bays': []}
+        }
         self.layer_visibility = {
             'Settlements': tk.BooleanVar(value=True),
             'Placemarks': tk.BooleanVar(value=True),
             'Features': tk.BooleanVar(value=True)
         }
         
-        self.adding_placemark = tk.BooleanVar(value=False)
+        self.placing_feature_info = None # Will store {'name': str, 'type': str}
         
         self.simulation_frames = []
         self.current_frame_index = -1
@@ -213,10 +217,10 @@ class App(tk.Tk):
 
         action_frame = ttk.Frame(self.controls_frame)
         action_frame.grid(row=row, columnspan=3, pady=5); row += 1
-        self.generate_button = ttk.Button(action_frame, text="Generate", command=self.start_generation)
+        self.generate_button = ttk.Button(action_frame, text="Regenerate World", command=self.start_generation)
         self.generate_button.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-        self.ice_button = ttk.Button(action_frame, text="Regenerate Ice", command=self.regenerate_ice, state=tk.DISABLED)
-        self.ice_button.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        self.random_button = ttk.Button(action_frame, text="New Random World", command=self.randomize_and_generate)
+        self.random_button.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
         
         recolor_frame = ttk.Frame(self.controls_frame)
         recolor_frame.grid(row=row, columnspan=3, pady=5); row += 1
@@ -260,7 +264,7 @@ class App(tk.Tk):
         placemark_frame = ttk.Frame(self.layers_frame)
         placemark_frame.grid(row=2, column=0, columnspan=2, sticky='w')
         ttk.Checkbutton(placemark_frame, text="Placemarks", variable=self.layer_visibility['Placemarks']).pack(side=tk.LEFT, padx=5)
-        ttk.Checkbutton(placemark_frame, text="Add Placemark", variable=self.adding_placemark, command=self.toggle_placemark_mode).pack(side=tk.LEFT, padx=5)
+        ttk.Button(placemark_frame, text="Place Custom Feature...", command=self.open_placemark_dialog).pack(side=tk.LEFT, padx=5)
 
     def _toggle_layer_visibility(self, layer_name):
         self.redraw_canvas()
@@ -323,24 +327,53 @@ class App(tk.Tk):
         self.redraw_canvas()
 
     def _on_canvas_press(self, event):
-        if self.adding_placemark.get():
+        if self.placing_feature_info:
             self._add_placemark_at_click(event)
         else:
             self._on_pan_start(event)
     
     def _add_placemark_at_click(self, event):
-        if not self.generator: return
+        if not self.generator or not self.placing_feature_info: return
         
-        placemark_name = simpledialog.askstring("New Placemark", "Enter a name for this location:", parent=self)
-        if not placemark_name:
-            return
-            
+        name = self.placing_feature_info['name']
+        ptype = self.placing_feature_info['type']
+        
         img_x, img_y = self.canvas_to_image_coords(event.x, event.y)
-        if img_x is not None:
-            if 'placemarks' not in self.layers:
-                self.layers['placemarks'] = []
-            self.layers['placemarks'].append({'name': placemark_name, 'x': img_x, 'y': img_y, 'type': 'placemark'})
-            self.redraw_canvas()
+        if img_x is None: return
+
+        new_feature = {'name': name, 'user_placed': True}
+
+        # Handle Area Features
+        if ptype in ["Ocean/Sea", "Mountain Range", "Forest Area", "Desert Area", "Jungle Area", "Tundra Area"]:
+            new_feature['center'] = (img_x, img_y)
+            if ptype == "Mountain Range":
+                new_feature['type'] = 'range'
+                self.layers['natural_features']['ranges'].append(new_feature)
+            else:
+                # Assign a generic area type, could be refined
+                new_feature['type'] = 'area' 
+                self.layers['natural_features']['areas'].append(new_feature)
+        
+        # Handle Point Features
+        else:
+            new_feature['x'], new_feature['y'] = img_x, img_y
+            if ptype == 'Settlement':
+                new_feature.update({'type': 'settlement', 'stype': 'custom'})
+                self.layers['settlements'].append(new_feature)
+            elif ptype == 'Mountain Peak':
+                new_feature.update({'type': 'peak'})
+                self.layers['natural_features']['peaks'].append(new_feature)
+            elif ptype == 'Bay':
+                 new_feature.update({'type': 'bay'})
+                 self.layers['natural_features']['bays'].append(new_feature)
+            else: # Generic Placemark
+                new_feature.update({'type': 'placemark'})
+                self.layers['placemarks'].append(new_feature)
+        
+        self.placing_feature_info = None
+        self.canvas.config(cursor="")
+        self.status_label.config(text="Ready")
+        self.redraw_canvas()
 
     def _on_right_click(self, event):
         """Finds the nearest editable feature and opens a dialog to rename it."""
@@ -355,11 +388,12 @@ class App(tk.Tk):
             for key in ['peaks', 'bays']:
                 if self.layers['natural_features'].get(key):
                     all_items.extend(self.layers['natural_features'][key])
-            if self.layers['natural_features'].get('areas'):
-                for area in self.layers['natural_features']['areas']:
-                    area_proxy = area.copy()
-                    area_proxy['x'], area_proxy['y'] = area['center']
-                    all_items.append(area_proxy)
+            for key in ['areas', 'ranges']:
+                 if self.layers['natural_features'].get(key):
+                    for area in self.layers['natural_features'][key]:
+                        area_proxy = area.copy()
+                        area_proxy['x'], area_proxy['y'] = area['center']
+                        all_items.append(area_proxy)
         
         if not all_items: return
 
@@ -394,7 +428,7 @@ class App(tk.Tk):
             for item in self.layers.get('placemarks', []):
                 if item['x'] == item_proxy['x'] and item['y'] == item_proxy['y']: return item
         else: # Natural features
-            for key in ['peaks', 'areas', 'bays']:
+            for key in ['peaks', 'areas', 'bays', 'ranges']:
                 for item in self.layers.get('natural_features', {}).get(key, []):
                     if 'center' in item and item['center'][0] == item_proxy['x'] and item['center'][1] == item_proxy['y']:
                         return item
@@ -403,6 +437,7 @@ class App(tk.Tk):
         return None
 
     def _on_map_hover(self, event):
+        if self.placing_feature_info: return
         if self.generator is None or self.generator.color_map is None:
             self.tooltip.hide()
             return
@@ -451,17 +486,28 @@ class App(tk.Tk):
         
     def set_ui_state(self, is_generating):
         state = tk.DISABLED if is_generating else tk.NORMAL
-        for widget in [self.generate_button, self.ice_button, self.recolor_button, self.palette_button, self.save_button, self.palette_combobox, self.run_sim_button]:
-            if widget != self.generate_button:
+        for widget in [self.generate_button, self.random_button, self.recolor_button, self.palette_button, self.save_button, self.palette_combobox, self.run_sim_button]:
+            if widget not in [self.generate_button, self.random_button]:
                 widget.config(state=tk.NORMAL if not is_generating and self.generator else tk.DISABLED)
         self.generate_button.config(state=state)
+        self.random_button.config(state=state)
+
+    def randomize_and_generate(self):
+        self.params['seed'].set(random.randint(0, 100000))
+        self.params['ice_seed'].set(random.randint(0, 100000))
+        self.params['moisture_seed'].set(random.randint(0, 100000))
+        self.start_generation()
 
     def start_generation(self):
         self.set_ui_state(is_generating=True)
         self.frame_viewer_frame.grid_remove()
         self.simulation_frames = []
         self.current_frame_index = -1
-        self.layers = {} # Reset layers
+        self.layers = {
+            'settlements': [],
+            'placemarks': [],
+            'natural_features': {'peaks': [], 'ranges': [], 'areas': [], 'bays': []}
+        }
         self.zoom = 1.0
         self.view_offset = [0, 0]
         self.cached_globe_source_image = None # Invalidate cache
@@ -490,8 +536,11 @@ class App(tk.Tk):
         self.after(0, self.finalize_generation)
 
     def finalize_generation(self):
-        self.layers['settlements'] = self.generator.settlements
-        self.layers['natural_features'] = self.generator.natural_features
+        self.layers['settlements'].extend(self.generator.settlements)
+        for key, value in self.generator.natural_features.items():
+            if key in self.layers['natural_features']:
+                self.layers['natural_features'][key].extend(value)
+        
         self.cached_globe_source_image = None
         
         self.redraw_canvas()
@@ -525,9 +574,9 @@ class App(tk.Tk):
         draw = ImageDraw.Draw(image, 'RGBA')
         
         try:
-            font_l = ImageFont.truetype("arialbd.ttf", size=14)
-            font_m = ImageFont.truetype("arial.ttf", size=11)
-            font_s = ImageFont.truetype("arial.ttf", size=9)
+            font_l = ImageFont.truetype("arialbd.ttf", size=16)
+            font_m = ImageFont.truetype("arial.ttf", size=12)
+            font_s = ImageFont.truetype("arial.ttf", size=10)
         except IOError:
             font_l = ImageFont.load_default()
             font_m = ImageFont.load_default()
@@ -535,17 +584,23 @@ class App(tk.Tk):
 
         # Draw Features
         if self.layer_visibility['Features'].get() and 'natural_features' in self.layers:
+            # Draw areas and ranges first
             for area in self.layers['natural_features'].get('areas', []):
                 cx, cy = self.image_to_canvas_coords(*area['center'])
                 if cx is not None: draw.text((cx, cy), area['name'], font=font_l, fill=(255, 255, 220, 192), anchor="mm", stroke_width=2, stroke_fill=(0,0,0,128))
+            for r in self.layers['natural_features'].get('ranges', []):
+                cx, cy = self.image_to_canvas_coords(*r['center'])
+                if cx is not None: draw.text((cx, cy), r['name'], font=font_l, fill=(220, 200, 180, 192), anchor="mm", stroke_width=2, stroke_fill=(0,0,0,128))
+
+            # Draw smaller point-based features on top
             for bay in self.layers['natural_features'].get('bays', []):
                 bx, by = self.image_to_canvas_coords(bay['x'], bay['y'])
                 if bx is not None: draw.text((bx, by), bay['name'], font=font_m, fill=(200, 220, 255, 192), anchor="mm", stroke_width=2, stroke_fill=(0,0,0,128))
             for peak in self.layers['natural_features'].get('peaks', []):
                 px, py = self.image_to_canvas_coords(peak['x'], peak['y'])
                 if px is not None:
-                    draw.polygon([(px, py-6), (px-6, py+5), (px+6, py+5)], fill=(200, 200, 200, 128), outline='black')
-                    draw.text((px, py - 8), peak['name'], font=font_m, fill="white", anchor="ms", stroke_width=1, stroke_fill="black")
+                    draw.polygon([(px, py-6), (px-4, py+3), (px+4, py+3)], fill=(200, 200, 200, 128), outline='black')
+                    draw.text((px, py + 5), peak['name'], font=font_s, fill="white", anchor="ms", stroke_width=1, stroke_fill="black")
 
         # Draw Settlements
         if self.layer_visibility['Settlements'].get() and 'settlements' in self.layers:
@@ -666,17 +721,27 @@ class App(tk.Tk):
 
         # Draw Features
         if self.layer_visibility['Features'].get() and 'natural_features' in self.layers:
+            # Draw large area names first
             for area in self.layers['natural_features'].get('areas', []):
                 cx, cy = self.image_to_canvas_coords(*area['center'])
-                if cx is not None: self._create_text_with_outline(cx, cy, text=area['name'], font=("Arial", 12, "italic"), fill="white", anchor="c", tags="overlay")
+                if cx is not None: self._create_text_with_outline(cx, cy, text=area['name'], font=("Arial", 14, "italic"), fill="#DDEEFF", anchor="c", tags="overlay")
+            
+            for r in self.layers['natural_features'].get('ranges', []):
+                cx, cy = self.image_to_canvas_coords(*r['center'])
+                if cx is not None: self._create_text_with_outline(cx, cy, text=r['name'], font=("Arial", 12, "bold"), fill="#D2B48C", anchor="c", tags="overlay")
+
+            # Draw smaller, more specific feature names
             for bay in self.layers['natural_features'].get('bays', []):
                 bx, by = self.image_to_canvas_coords(bay['x'], bay['y'])
                 if bx is not None: self._create_text_with_outline(bx, by, text=bay['name'], font=("Arial", 10, "italic"), fill="#add8e6", anchor="c", tags="overlay")
+            
             for peak in self.layers['natural_features'].get('peaks', []):
                 px, py = self.image_to_canvas_coords(peak['x'], peak['y'])
                 if px is not None:
-                    self._create_text_with_outline(px, py - 8, text=peak['name'], font=("Arial", 9), fill="white", anchor="s", tags="overlay")
-                    self.canvas.create_text(px, py, text="▲", font=("Arial", 10), fill="white", tags="overlay")
+                    self._create_text_with_outline(px, py-8, text=peak['name'], font=("Arial", 9), fill="white", anchor="s", tags="overlay")
+                    self.canvas.create_text(px, py, text="▲", font=("Arial", 12, "bold"), fill="white", tags="overlay")
+                    self.canvas.create_text(px, py, text="▲", font=("Arial", 12), fill="black", tags="overlay")
+
 
         # Draw Settlements
         if self.layer_visibility['Settlements'].get() and 'settlements' in self.layers:
@@ -772,17 +837,17 @@ class App(tk.Tk):
         self.redraw_canvas()
 
     def _on_pan_start(self, event):
+        if self.placing_feature_info: return
         self.pan_start_pos = (event.x, event.y)
-        if not self.adding_placemark.get():
-            self.canvas.config(cursor="fleur")
+        self.canvas.config(cursor="fleur")
 
     def _on_pan_end(self, event):
         self.pan_start_pos = None
-        if not self.adding_placemark.get():
+        if not self.placing_feature_info:
             self.canvas.config(cursor="")
 
     def _on_pan_move(self, event):
-        if self.pan_start_pos is None or self.adding_placemark.get(): return
+        if self.pan_start_pos is None or self.placing_feature_info: return
         
         dx, dy = event.x - self.pan_start_pos[0], event.y - self.pan_start_pos[1]
         
@@ -805,11 +870,12 @@ class App(tk.Tk):
         self.pan_start_pos = (event.x, event.y)
         self.redraw_canvas()
         
-    def toggle_placemark_mode(self):
-        if self.adding_placemark.get():
+    def open_placemark_dialog(self):
+        dialog = PlacemarkDialog(self)
+        if dialog.result:
+            self.placing_feature_info = dialog.result
             self.canvas.config(cursor="crosshair")
-        else:
-            self.canvas.config(cursor="")
+            self.status_label.config(text=f"Click on the map to place a {self.placing_feature_info['type']}...")
 
     def save_image(self):
         if not self.generator or not self.generator.pil_image: return
@@ -823,7 +889,7 @@ class App(tk.Tk):
 
     def save_preset(self):
         params_to_save = {key: var.get() for key, var in self.params.items()}
-        params_to_save['layers'] = self.layers
+        # Intentionally do not save layers, as they should be regenerated
         file_path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON Preset File", "*.json"), ("All Files", "*.*")], title="Save Preset As")
         if file_path:
             try:
@@ -838,8 +904,16 @@ class App(tk.Tk):
                 for key, var in self.params.items():
                     if key in loaded_params: var.set(loaded_params[key])
                 
-                self.layers = loaded_params.get('layers', {})
-                self.redraw_canvas()
+                # Clear existing layers and image, as they are now stale
+                self.layers = {
+                    'settlements': [],
+                    'placemarks': [],
+                    'natural_features': {'peaks': [], 'ranges': [], 'areas': [], 'bays': []}
+                }
+                self.pil_image = None
+                self.generator = None
+                self.canvas.delete("all")
+                self.status_label.config(text="Preset loaded. Click 'Regenerate World'.")
 
                 self.on_projection_change()
                 self.on_style_change()
@@ -992,42 +1066,36 @@ class App(tk.Tk):
         self.prev_frame_button.config(state=tk.NORMAL if index > 0 else tk.DISABLED)
         self.next_frame_button.config(state=tk.NORMAL if index < len(self.simulation_frames) - 1 else tk.DISABLED)
 
-class ExportDialog(simpledialog.Dialog):
+class PlacemarkDialog(simpledialog.Dialog):
     def body(self, master):
-        self.title("Export Options")
+        self.title("Place Custom Feature")
         
-        self.export_type = tk.StringVar(value="VTT Map")
-        self.label_size = tk.StringVar(value="Medium")
+        self.name_var = tk.StringVar()
+        self.type_var = tk.StringVar(value="Placemark")
 
-        ttk.Label(master, text="Export Type:").grid(row=0, sticky='w', padx=5, pady=2)
-        ttk.Radiobutton(master, text="VTT Map (Overlays with fixed size)", variable=self.export_type, value="VTT Map").grid(row=1, sticky='w', padx=10)
-        ttk.Radiobutton(master, text="GM Map (Overlays match current view)", variable=self.export_type, value="GM Map").grid(row=2, sticky='w', padx=10)
-        ttk.Radiobutton(master, text="Player Map (No overlays)", variable=self.export_type, value="Player Map").grid(row=3, sticky='w', padx=10)
-
-        self.label_frame = ttk.Labelframe(master, text="Label Size for VTT Export")
-        self.label_frame.grid(row=4, columnspan=2, sticky='ew', padx=5, pady=5)
+        ttk.Label(master, text="Feature Name:").grid(row=0, column=0, sticky='w', padx=5, pady=2)
+        self.name_entry = ttk.Entry(master, textvariable=self.name_var)
+        self.name_entry.grid(row=0, column=1, sticky='ew', padx=5, pady=2)
         
-        ttk.Radiobutton(self.label_frame, text="Small", variable=self.label_size, value="Small").pack(side=tk.LEFT, padx=5, pady=5)
-        ttk.Radiobutton(self.label_frame, text="Medium", variable=self.label_size, value="Medium").pack(side=tk.LEFT, padx=5, pady=5)
-        ttk.Radiobutton(self.label_frame, text="Large", variable=self.label_size, value="Large").pack(side=tk.LEFT, padx=5, pady=5)
+        ttk.Label(master, text="Feature Type:").grid(row=1, column=0, sticky='w', padx=5, pady=2)
         
-        self.export_type.trace_add('write', self._toggle_label_options)
+        feature_types = [
+            "Placemark", "Settlement", "Mountain Peak", "Bay", 
+            "Ocean/Sea", "Mountain Range", "Forest Area", "Desert Area", "Jungle Area", "Tundra Area"
+        ]
+        self.type_combo = ttk.Combobox(master, textvariable=self.type_var, 
+                                       values=feature_types,
+                                       state="readonly")
+        self.type_combo.grid(row=1, column=1, sticky='ew', padx=5, pady=2)
+        
         self.result = None
-        return None
-
-    def _toggle_label_options(self, *args):
-        if self.export_type.get() == "VTT Map":
-            for child in self.label_frame.winfo_children():
-                child.config(state=tk.NORMAL)
-        else:
-            for child in self.label_frame.winfo_children():
-                child.config(state=tk.DISABLED)
+        return self.name_entry # initial focus
 
     def apply(self):
-        self.result = {
-            'type': self.export_type.get(),
-            'label_size': self.label_size.get()
-        }
+        name = self.name_var.get()
+        ptype = self.type_var.get()
+        if name and ptype:
+            self.result = {'name': name, 'type': ptype}
 
 if __name__ == "__main__":
     app = App()

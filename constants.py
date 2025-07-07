@@ -49,18 +49,40 @@ PREDEFINED_PALETTES = {
 
 THEME_NAME_FRAGMENTS = {
     'High Fantasy': {
-        'prefixes': ['Ael', 'Bara', 'Cael', 'Dra', 'El', 'Fael', 'Gal', 'Har', 'Ith', 'Kor', 'Luth', 'Mor', 'Norn', 'Oth', 'Pyr', 'Quel', 'Rath', 'Sil', 'Tir', 'Val'],
-        'suffixes': ['don', 'dor', 'dras', 'fall', 'fast', 'garde', 'heim', 'ia', 'is', 'kar', 'land', 'lor', 'mar', 'nor', 'os', 'thal', 'thas', 'tine', 'vale', 'wood'],
-        'types': ['Castle', 'Keep', 'Village', 'Town', 'City', 'Citadel', 'Hold', 'Fortress']
+        'prefixes': ['Aer', 'Amn', 'Ard', 'Ast', 'Bel', 'Bór', 'Cael', 'Cal', 'Cel', 'Cor', 'Cyr', 'Dal', 'Dor', 'Dún', 'Ed', 'El', 'Er', 'Est', 'Fael', 'Fen', 'Gal', 'Gîl', 'Gond', 'Har', 'Hel', 'Il', 'Is', 'Ith', 'Kor', 'Lael', 'Lin', 'Loth', 'Lûr', 'Mal', 'Min', 'Mor', 'Nan', 'Nar', 'Nen', 'Nor', 'Or', 'Pel', 'Quel', 'Ram', 'Rhûn', 'Riv', 'Ro', 'Sar', 'Sil', 'Sir', 'Tal', 'Tar', 'Taur', 'Thar', 'Tir', 'Um', 'Val'],
+        'suffixes': ['ad', 'aeg', 'ael', 'an', 'and', 'ant', 'ar', 'ard', 'as', 'ath', 'bor', 'dan', 'del', 'dir', 'dol', 'dor', 'dras', 'duin', 'dur', 'ech', 'ed', 'eg', 'eil', 'el', 'en', 'eor', 'er', 'es', 'falas', 'fast', 'find', 'fin', 'for', 'gal', 'gard', 'garth', 'gil', 'gond', 'gor', 'had', 'har', 'hîr', 'ia', 'il', 'in', 'ion', 'ir', 'is', 'ith', 'kar', 'lad', 'laer', 'lam', 'land', 'las', 'lin', 'lith', 'lond', 'lor', 'los', 'loth', 'mar', 'men', 'mir', 'mith', 'mon', 'mor', 'nan', 'nar', 'nath', 'ndor', 'nen', 'nil', 'nir', 'nor', 'orn', 'os', 'ost', 'ram', 'randir', 'ras', 'rath', 'rhim', 'rhûn', 'rien', 'ril', 'rim', 'rin', 'rion', 'ro', 'roch', 'rond', 'ros', 'roth', 'ruin', 'sal', 'sar', 'sil', 'sir', 'thal', 'thas', 'thel', 'thir', 'thôl', 'thor', 'thuin', 'til', 'tin', 'tir', 'uial', 'uil', 'ûn', 'ur', 'val', 'van', 'waith', 'wen', 'wing', 'yale'],
+        'vowels': ['a', 'e', 'i', 'o', 'u', 'ae', 'ei', 'ia', 'io', 'ua'],
+        'single': ['Arnor', 'Gondor', 'Mordor', 'Eriador', 'Rohan', 'Beleriand', 'Mithlond', 'Imladris', 'Lórien', 'Isengard', 'Dol Guldur', 'Moria', 'Angmar', 'Harad', 'Rhûn', 'Dale', 'Esgaroth'],
+        'types': ['Castle', 'Keep', 'Village', 'Town', 'City', 'Citadel', 'Hold', 'Fortress', 'Tower', 'Haven', 'Vale', 'Wood', 'March', 'Fief'],
+        'ocean_prefixes': ['Endless', 'Great', 'Sunken', 'Whispering', 'Shrouded', 'Forgotten', 'Sundering', 'Eternal', 'Outer'],
+        'ocean_suffixes': ['Expanse', 'Ocean', 'Deep', 'Void', 'Reach', 'Sea'],
+        'sea_prefixes': ['Jade', 'Singing', 'Broken', 'Frozen', 'Stormy', 'Inner', 'Shining', 'Restless'],
+        'mountain_prefixes': ['Dragon\'s', 'Giant\'s', 'Cloud', 'Stone', 'Iron', 'Shadow', 'Misty', 'Grey', 'Red', 'White', 'Black'],
+        'mountain_suffixes': ['Spine', 'Teeth', 'Reach', 'Crown', 'Veins', 'Crags', 'Peaks', 'Hills', 'Mountains', 'Range'],
+        'bay_suffixes': ['Sorrow', 'Whispers', 'Kings', 'Fools', 'Merchants', 'Drowned', 'Lost', 'Last', 'Ice']
     },
     'Sci-Fi': {
-        'prefixes': ['Alpha', 'Cygnus', 'Helios', 'Hyper', 'Kepler', 'Nexus', 'Orion', 'Plex', 'Stel', 'Terra', 'Tycho', 'Vex', 'Xylo', 'Zenith', 'Andro'],
-        'suffixes': ['-7', ' Prime', ' Station', ' IX', ' Colony', ' Base', ' One', ' Omega', ' Terminus', ' Hub', ' Complex', ' Citadel', ' Point', ' Major', ' Minor'],
-        'types': ['Outpost', 'Colony', 'Station', 'Base', 'Habitat', 'Complex', 'Dome']
+        'prefixes': ['Acheron', 'Aegis', 'Alpha', 'Andro', 'Antares', 'Apex', 'Arc', 'Astro', 'Aura', 'Azure', 'Beta', 'Bio', 'Ceres', 'Chrono', 'Cinder', 'Cognito', 'Com', 'Cryo', 'Cyber', 'Cygni', 'Delta', 'Dyna', 'Echo', 'Elysium', 'Eon', 'Epsilon', 'Exo', 'Flux', 'Forerunner', 'Galvan', 'Giga', 'Grav', 'Halcyon', 'Helios', 'Holo', 'Hyper', 'Infra', 'Inter', 'Iota', 'Juno', 'Kappa', 'Kelvin', 'Kepler', 'Kilo', 'Kodiak', 'Lambda', 'Lazarus', 'Luna', 'Mag', 'Mega', 'Meta', 'Micro', 'Myriad', 'Nano', 'Nebula', 'Neo', 'Nexus', 'Nova', 'Omni', 'Omega', 'Orion', 'Orphiuchus', 'Ortho', 'Pallas', 'Pan', 'Para', 'Penta', 'Phase', 'Pico', 'Plex', 'Poly', 'Praxis', 'Procyon', 'Proto', 'Proxy', 'Psy', 'Pylon', 'Quad', 'Quantum', 'Quasar', 'Relay', 'Rho', 'Scion', 'Sigma', 'Sol', 'Spectre', 'Star', 'Stel', 'Sub', 'Syn', 'Tau', 'Tech', 'Telsa', 'Tensor', 'Tera', 'Terra', 'Tetra', 'Thanatos', 'Thermo', 'Triton', 'Tycho', 'Ultra', 'Umbra', 'Uni', 'Vanguard', 'Vela', 'Vesta', 'Vex', 'Vita', 'Void', 'Volta', 'Vortex', 'War', 'Xeno', 'Xylo', 'Zenith', 'Zeta', 'Zion'],
+        'suffixes': ['-7', ' Prime', ' Station', ' IX', ' Colony', ' Base', ' One', ' Omega', ' Terminus', ' Hub', ' Complex', ' Citadel', ' Point', ' Major', ' Minor', ' Spire', ' Array', ' Core', ' Drift', ' Facility', ' Gate', ' Grid', ' Harbor', ' Installation', ' Lab', ' Locus', ' Main', ' Node', ' Outpost', ' Port', ' Post', ' Relay', ' Ring', ' Secundus', ' Sector', ' Spoke', ' Terminal', ' Tower', ' Works', ' Zone'],
+        'single': ['Aurelia', 'Elysia', 'Hadrian', 'Hyperion', 'Icarus', 'Janus', 'Kepler-186f', 'Magellan', 'Meridian', 'Olympus', 'Pandora', 'Prometheus', 'Solitude', 'Tantalus', 'Tartarus', 'Terminus', 'Vespera', 'Zion'],
+        'types': ['Outpost', 'Colony', 'Station', 'Base', 'Habitat', 'Complex', 'Dome', 'Platform', 'Rig', 'Spire', 'Settlement', 'City'],
+        'ocean_prefixes': ['Primary', 'Galactic', 'Azure', 'Helium', 'Forbidden', 'Xeno', 'Methane', 'Hydrogen'],
+        'ocean_suffixes': ['Ocean', 'Sea', 'Expanse', 'Deep', 'Void', 'Basin'],
+        'sea_prefixes': ['Cryo', 'Hydro', 'Methane', 'Irradiated', 'Plasma', 'Silicon'],
+        'mountain_prefixes': ['Titanium', 'Impact', 'Cryo-volcanic', 'Tectonic', 'Obsidian', 'Iridium'],
+        'mountain_suffixes': ['Range', 'Uplift', 'Plateau', 'Massif', 'Spine', 'Shield'],
+        'bay_suffixes': ['Landing', 'Sector', 'Zone', 'Port', 'Anchor', 'Approach', 'Gulf']
     },
     'Post-Apocalyptic': {
-        'prefixes': ['Rust', 'Ash', 'Dust', 'Scrap', 'Bone', 'Wreck', 'Last', 'New', 'Fort', 'Old', 'Sunken', 'Broken', 'Grit'],
-        'suffixes': ['-Town', ' Heap', ' Hope', ' Haven', ' Rock', ' Reach', ' Scrap', ' Yard', ' Camp', ' Refuge', ' Point', ' Out', ' Pit', ' Fall'],
-        'types': ['Camp', 'Settlement', 'Refuge', 'Fort', 'Scrap-town', 'Holdout']
+        'prefixes': ['Ash', 'Barren', 'Black', 'Bleak', 'Blood', 'Bone', 'Broken', 'Burn', 'Corpse', 'Crack', 'Crimson', 'Cross', 'Dead', 'Dog', 'Dust', 'Dyer', 'Echo', 'Fade', 'Fall', 'Fort', 'Gallows', 'Ghost', 'Gloom', 'Grave', 'Grim', 'Grit', 'Hang', 'Husk', 'Iron', 'Kill', 'Last', 'Lone', 'Lost', 'Mad', 'Mire', 'Mist', 'Mud', 'Mute', 'New', 'No', 'Old', 'Pale', 'Quick', 'Quiet', 'Rag', 'Rat', 'Red', 'Rot', 'Ruin', 'Rust', 'Salt', 'Sand', 'Scab', 'Scrap', 'Shade', 'Shadow', 'Shatter', 'Shiv', 'Silent', 'Skull', 'Slick', 'Slit', 'Smoke', 'Sorrow', 'Spike', 'Still', 'Stone', 'Stray', 'Sunken', 'Tar', 'Thorn', 'Torn', 'Twist', 'Waste', 'Wreck'],
+        'suffixes': ['-Town', ' Heap', ' Hope', ' Haven', ' Rock', ' Reach', ' Scrap', ' Yard', ' Camp', ' Refuge', ' Point', ' Out', ' Pit', ' Fall', ' End', ' Grave', ' Post', ' Fort', ' Scrap', 'Shanty', 'Hole', 'Den', 'Run', 'Gorge', 'Rest', 'Stop', 'Cross', 'Drift', 'Gulch', 'Sprawl', 'Yard'],
+        'single': ['Salvation', 'Terminus', 'Last Hope', 'The Pitt', 'Junkyard', 'The Glow', 'Golgotha', 'Bartertown', 'Rapture', 'Bedlam', 'Elysium', 'Gomorrah', 'Bedrock'],
+        'types': ['Camp', 'Settlement', 'Refuge', 'Fort', 'Scrap-town', 'Holdout', 'Warren', 'Den', 'Oasis', 'Stronghold', 'Bunker'],
+        'ocean_prefixes': ['Acid', 'Sludge', 'Poison', 'Dead', 'Black', 'Blight', 'Rotten', 'Glass'],
+        'ocean_suffixes': ['Sea', 'Wastes', 'Mire', 'Deep', 'Expanse', 'Blackness'],
+        'sea_prefixes': ['Grime', 'Scab', 'Rust', 'Oil', 'Bile', 'Grit', 'Tar'],
+        'mountain_prefixes': ['Jagged', 'Shattered', 'Glass', 'Rusted', 'Concrete', 'Bone', 'Slag', 'Barbed'],
+        'mountain_suffixes': ['Peaks', 'Sprawl', 'Heap', 'Ruin', 'Ridge', 'Spine', 'Scraps'],
+        'bay_suffixes': ['Graveyard', 'Wreckage', 'Grave', 'End', 'Choke', 'Grief', 'Boneyard']
     },
 }
