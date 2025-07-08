@@ -514,39 +514,36 @@ class FractalWorldGenerator:
         # Start with a base suitability map of all zeros.
         suitability = np.zeros(self.world_map.shape, dtype=np.float32)
         
-        # 1. Establish BASE suitability from biomes.
+        # 1. Establish BASE suitability from biomes. Ice/Glaciers will have a score of 0.
         for name, props in BIOME_DEFINITIONS.items():
             if name in BIOME_SUITABILITY:
                 start_idx, end_idx = props['idx'], props['idx'] + props.get('shades', 1)
                 biome_mask = (self.color_map >= start_idx) & (self.color_map < end_idx)
                 suitability[biome_mask] = BIOME_SUITABILITY[name]
         
-        # Create a mask of all potentially habitable land (suitability > 0)
+        # --- MODIFICATION START: Corrected Application of Modifiers ---
+
+        # 2. Apply global modifiers using broadcasting. This is simpler and avoids indexing errors.
+        
+        # Apply Latitude Modifier to the entire map.
+        # Uninhabitable areas (suitability=0) will remain 0.
+        y_coords = np.arange(self.y_range)
+        latitude_score = 1.0 - (np.abs(y_coords - self.y_range / 2.0) / (self.y_range / 2.0))
+        suitability *= latitude_score[np.newaxis, :]
+
+        # 3. Create a final mask of habitable land to apply subsequent, more complex modifiers.
         habitable_mask = suitability > 0
 
-        # 2. Apply modifiers to habitable areas.
-        
-        # Latitude Modifier
-        y_coords = np.arange(self.y_range)
-        latitude_penalty = 1.0 - (np.abs(y_coords - self.y_range / 2.0) / (self.y_range / 2.0))
-        latitude_suitability = latitude_penalty**2
-        
-        # --- CORRECTION ---
-        # Apply the latitude suitability to the entire map using broadcasting.
-        # Areas with 0 suitability will remain 0.
-        suitability *= latitude_suitability[np.newaxis, :]
-        
-        # Water Proximity Modifier
+        # Apply Water Proximity Modifier only to habitable areas
         if np.any(habitable_mask):
             distance_to_water = self._calculate_distance_to_water(self.land_mask)
             water_bonus_mask = habitable_mask & np.isfinite(distance_to_water)
-            
             suitability[water_bonus_mask] += 0.8 / ((distance_to_water[water_bonus_mask]**0.5) + 1e-6)
 
-        # Re-filter the habitable mask after applying modifiers that could make areas unsuitable
+        # Apply Altitude and Slope Modifiers only to habitable areas
+        # Re-filter the habitable mask in case water bonus made some areas negative
         habitable_mask = suitability > 0
-
-        # Altitude Modifier
+        
         land_altitudes = self.world_map[habitable_mask]
         if land_altitudes.size > 0:
             min_land_alt, max_land_alt = np.min(land_altitudes), np.max(land_altitudes)
@@ -554,26 +551,27 @@ class FractalWorldGenerator:
                 normalized_land_alt = (self.world_map[habitable_mask] - min_land_alt) / (max_land_alt - min_land_alt)
                 suitability[habitable_mask] -= normalized_land_alt * 0.7
 
-        # Slope Modifier
         grad_x, grad_y = np.gradient(self.world_map.astype(np.float32))
         slope = np.sqrt(grad_x**2 + grad_y**2)
         if np.max(slope) > 0:
             normalized_slope = slope / np.max(slope)
-            # Re-filter habitable_mask before applying slope penalty
+            # Make sure we're still only applying to habitable areas
             habitable_mask = suitability > 0
             suitability[habitable_mask] -= normalized_slope[habitable_mask] * 1.5
 
-        # Noise Modifier for random variation
+        # Apply Noise Modifier
+        habitable_mask = suitability > 0
         settlement_noise_map = self._numba_generate_noise_map(
             self.x_range, self.y_range, self.settlement_perm, self.settlement_grad3,
             scale=20.0, octaves=4, persistence=0.5, lacunarity=2.0
         )
-        habitable_mask = suitability > 0 # Final check on habitability
         suitability[habitable_mask] += ((settlement_noise_map[habitable_mask] + 1.0) / 2.0) * 0.2
         
+        # --- MODIFICATION END ---
+
         suitability[suitability < 0] = 0
 
-        # 3. Find the best settlement locations from the final suitability map.
+        # Find the best settlement locations from the final suitability map.
         flat_suitability = suitability.flatten()
         
         possible_indices = np.where(flat_suitability > 0)[0]
@@ -616,32 +614,34 @@ class FractalWorldGenerator:
     def _find_features(self, mask, min_size=50):
         """
         Finds contiguous features in a mask using scipy.ndimage.label for high performance.
+        This version has corrected axis handling.
         """
         features = []
-        # The label function finds all contiguous areas and assigns a unique integer to each one.
+        # The mask has shape (width, height), which is (x, y).
         labeled_array, num_features = label(mask)
 
         if num_features > 0:
-            # find_objects returns a list of slice objects that bound each feature.
-            # We can use these slices to analyze each feature individually.
+            # Slices are returned as (slice_for_axis_0, slice_for_axis_1), so (slice_x, slice_y)
             slices = find_objects(labeled_array)
-            for i, feature_slice in enumerate(slices):
+            for i, (slice_x, slice_y) in enumerate(slices):
                 feature_label = i + 1
-                # Get the coordinates of the current feature by looking at the labeled array within its bounding box
-                feature_mask = labeled_array[feature_slice] == feature_label
+                feature_mask = labeled_array[slice_x, slice_y] == feature_label
                 size = np.sum(feature_mask)
 
                 if size >= min_size:
-                    # Calculate the center of the feature within its bounding box
-                    center_y, center_x = np.mean(np.argwhere(feature_mask), axis=0)
-                    # Convert the relative center to absolute map coordinates
-                    abs_center_x = int(center_x + feature_slice[1].start)
-                    abs_center_y = int(center_y + feature_slice[0].start)
+                    # np.argwhere returns coordinates as (row, col) relative to the slice.
+                    # For our (x, y) mask slice, this is (local_x, local_y).
+                    coords = np.argwhere(feature_mask)
+                    # Calculate the mean for each axis correctly.
+                    mean_x, mean_y = np.mean(coords, axis=0)
+                    
+                    # Convert the relative center to absolute map coordinates.
+                    abs_center_x = int(mean_x + slice_x.start)
+                    abs_center_y = int(mean_y + slice_y.start)
 
                     features.append({
                         'size': int(size),
                         'center': (abs_center_x, abs_center_y)
-                        # We no longer need to store all coordinates, saving memory
                     })
 
         features.sort(key=lambda f: f['size'], reverse=True)
@@ -654,100 +654,114 @@ class FractalWorldGenerator:
         num_features_to_find = self.params.get('num_features', 10)
         theme = self.params.get('theme', 'High Fantasy')
         name_fragments = THEME_NAME_FRAGMENTS.get(theme, THEME_NAME_FRAGMENTS['High Fantasy'])
+        
+        features = {'peaks': [], 'ranges': [], 'areas': []}
+        
+        # --- MODIFICATION START: Dynamic Minimum Feature Size ---
+        total_land_pixels = np.sum(self.land_mask)
+        if total_land_pixels == 0:
+            # If there's no land, we can't name land features.
+            # We can still name the ocean if that's all there is.
+            water_bodies = self._find_features(~self.land_mask, min_size=1)
+            if water_bodies:
+                ocean_name = f"The {self._generate_fantasy_name(name_fragments)} Ocean"
+                water_bodies[0]['name'] = ocean_name
+                features['areas'].append(water_bodies[0])
+            return features
+        
+        # Calculate min_area_size based on a percentage of the LAND area,
+        # ensuring it doesn't get too small on tiny islands.
+        min_land_feature_size = max(50, int(total_land_pixels * 0.01))
+        # --- MODIFICATION END ---
 
-        features = {'peaks': [], 'ranges': [], 'areas': [], 'bays': []}
-        min_area_size = int(self.x_range * self.y_range * 0.005)
 
-        # --- GUARANTEED FEATURES ---
+        # --- Step 1: Find all potential features of all types ---
+        
+        all_candidates = []
 
-        # 1. Name the main Ocean
+        # Find water bodies
+        # Water bodies are still compared to the total map size, as they can be vast.
+        min_water_size = int(self.x_range * self.y_range * 0.002)
         water_bodies = self._find_features(~self.land_mask, min_size=1)
         if water_bodies:
-            ocean = water_bodies.pop(0)
-            ocean_name = f"The {self._generate_fantasy_name(name_fragments)} {random.choice(name_fragments['ocean_suffixes'])}"
-            ocean.update({'name': ocean_name, 'type': 'ocean'})
-            features['areas'].append(ocean)
-
-        # 2. Name the main Mountain Range and its Peak
-        min_mountain_height = np.percentile(self.world_map[self.land_mask], 90) if np.any(self.land_mask) else 0
+            all_candidates.append({'feature': water_bodies.pop(0), 'type': 'ocean'})
+            for body in water_bodies:
+                if body['size'] < min_water_size: continue
+                center_x, center_y = body['center']
+                if (self.land_mask[np.clip(center_x - 5, 0, self.x_range-1), center_y] and
+                    self.land_mask[np.clip(center_x + 5, 0, self.x_range-1), center_y] and
+                    self.land_mask[center_x, np.clip(center_y - 5, 0, self.y_range-1)] and
+                    self.land_mask[center_x, np.clip(center_y + 5, 0, self.y_range-1)]):
+                    all_candidates.append({'feature': body, 'type': 'lake'})
+                else:
+                    all_candidates.append({'feature': body, 'type': 'sea'})
+        
+        # Find mountain ranges using the new dynamic land feature size
+        min_mountain_height = np.percentile(self.world_map[self.land_mask], 90)
         mountain_mask = (self.world_map >= min_mountain_height) & self.land_mask
+        for feature in self._find_features(mountain_mask, min_size=min_land_feature_size):
+            all_candidates.append({'feature': feature, 'type': 'range'})
 
-        labeled_mountains, num_mountain_features = label(mountain_mask)
-
-        if num_mountain_features > 0:
-            labels, counts = np.unique(labeled_mountains[labeled_mountains > 0], return_counts=True)
-            if counts.size > 0:
-                largest_range_label = labels[np.argmax(counts)]
-
-                # np.argwhere on an array of shape (x, y) returns coordinates as (x, y) pairs.
-                range_coords = np.argwhere(labeled_mountains == largest_range_label)
-
-                center_x = int(np.mean(range_coords[:, 0]))
-                center_y = int(np.mean(range_coords[:, 1]))
-
-                range_name = f"The {self._generate_fantasy_name(name_fragments)} {random.choice(name_fragments['mountain_suffixes'])}"
-                main_range_feature = {'center': (center_x, center_y), 'name': range_name, 'type': 'range'}
-                features['ranges'].append(main_range_feature)
-
-                # --- CORRECTION ---
-                # To index world_map[x, y], we use the first column for x and the second for y.
-                range_heights = self.world_map[range_coords[:, 0], range_coords[:, 1]]
-                highest_point_idx = np.argmax(range_heights)
-
-                # Unpack the (x, y) pair from the coordinates array.
-                peak_x, peak_y = range_coords[highest_point_idx]
-                
-                peak_name = f"Mount {self._generate_fantasy_name(name_fragments)}"
-                features['peaks'].append({'x': peak_x, 'y': peak_y, 'name': peak_name, 'type': 'peak'})
-
-        # --- SLIDER-DEPENDENT FEATURES ---
-
-        feature_candidates = []
-
-        all_mountain_ranges = self._find_features(mountain_mask, min_size=min_area_size)
-
-        for body in water_bodies:
-            if body['size'] < min_area_size: continue
-            is_lake = np.all(self.land_mask[np.clip(body['center'][0] + np.array([-1, 1]), 0, self.x_range-1), body['center'][1]]) and \
-                      np.all(self.land_mask[body['center'][0], np.clip(body['center'][1] + np.array([-1, 1]), 0, self.y_range-1)])
-            name = f"Lake {self._generate_fantasy_name(name_fragments)}" if is_lake else f"The {self._generate_fantasy_name(name_fragments)} Sea"
-            b_type = 'lake' if is_lake else 'sea'
-            feature_candidates.append({'feature': body, 'name': name, 'type': b_type, 'category': 'areas'})
-
-        for r in all_mountain_ranges:
-             if r['size'] < min_area_size: continue
-             # Avoid re-naming the main range if it's large enough to be a candidate
-             if any(np.array_equal(r['center'], main_range_feature['center']) for main_range_feature in features['ranges']): continue
-             name = f"The {self._generate_fantasy_name(name_fragments)} {random.choice(name_fragments['mountain_suffixes'])}"
-             feature_candidates.append({'feature': r, 'name': name, 'type': 'range', 'category': 'ranges'})
-
-        biome_types_to_name = { 'desert': ('The {} Desert', 'desert'), 'tropical_rainforest': ('The {} Jungle', 'jungle'), 'temperate_forest': ('The {} Forest', 'forest'), 'tundra': ('The {} Wastes', 'wastes')}
-        for biome_key, (name_template, type_key) in biome_types_to_name.items():
+        # Find major biome areas using the new dynamic land feature size
+        biome_types_to_find = { 'desert': 'desert', 'tropical_rainforest': 'jungle', 
+                                'temperate_forest': 'forest', 'tundra': 'wastes'}
+        for biome_key, f_type in biome_types_to_find.items():
             props = BIOME_DEFINITIONS[biome_key]
             mask = (self.color_map_before_ice >= props['idx']) & (self.color_map_before_ice < props['idx'] + props.get('shades', 1))
-            if not np.any(mask): continue
-            biome_areas = self._find_features(mask, min_size=min_area_size)
-            for area in biome_areas:
-                 name = name_template.format(self._generate_fantasy_name(name_fragments))
-                 feature_candidates.append({'feature': area, 'name': name, 'type': type_key, 'category': 'areas'})
-        
-        feature_candidates.sort(key=lambda x: x['feature']['size'], reverse=True)
-        
-        named_centers = [tuple(f['center']) for f in features['areas'] + features['ranges']]
-        min_dist_sq = (self.x_range / (num_features_to_find + 5))**2
+            for feature in self._find_features(mask, min_size=min_land_feature_size):
+                 all_candidates.append({'feature': feature, 'type': f_type})
 
-        for cand in feature_candidates:
-            if len(features['areas']) + len(features['ranges']) >= num_features_to_find: break
+        # --- Step 2: Sort all candidates by size and name them ---
+
+        all_candidates.sort(key=lambda x: x['feature']['size'], reverse=True)
+
+        named_features_count = 0
+        named_types = set()
+        named_centers = []
+        min_dist_sq = (self.x_range / (num_features_to_find + 10))**2
+
+        for cand in all_candidates:
+            if named_features_count >= num_features_to_find: break
             
             center = tuple(cand['feature']['center'])
-            if named_centers:
-                 dist_sq = min(np.sum((np.array(center) - np.array(c))**2) for c in named_centers)
-                 if dist_sq < min_dist_sq: continue
+            f_type = cand['type']
             
-            cand['feature'].update({'name': cand['name'], 'type': cand['type']})
-            features[cand['category']].append(cand['feature'])
-            named_centers.append(center)
+            is_new_type = f_type not in named_types
+            is_far_enough = not named_centers or min(np.sum((np.array(center) - np.array(c))**2) for c in named_centers) > min_dist_sq
 
+            if is_new_type or is_far_enough:
+                name = ""
+                if f_type == 'ocean': name = f"The {self._generate_fantasy_name(name_fragments)} Ocean"
+                elif f_type == 'sea': name = f"The {self._generate_fantasy_name(name_fragments)} Sea"
+                elif f_type == 'lake': name = f"Lake {self._generate_fantasy_name(name_fragments)}"
+                elif f_type == 'range': name = f"The {self._generate_fantasy_name(name_fragments)} Mountains"
+                elif f_type == 'desert': name = f"The {self._generate_fantasy_name(name_fragments)} Desert"
+                elif f_type == 'jungle': name = f"The {self._generate_fantasy_name(name_fragments)} Jungle"
+                elif f_type == 'forest': name = f"The {self._generate_fantasy_name(name_fragments)} Forest"
+                elif f_type == 'wastes': name = f"The {self._generate_fantasy_name(name_fragments)} Wastes"
+
+                final_feature = cand['feature']
+                final_feature['name'] = name
+                final_feature['type'] = f_type
+
+                if f_type == 'range':
+                    features['ranges'].append(final_feature)
+                    labeled_mountains, _ = label(mountain_mask)
+                    center_x, center_y = final_feature['center']
+                    label_at_center = labeled_mountains[center_x, center_y]
+                    if label_at_center > 0:
+                        range_coords = np.argwhere(labeled_mountains == label_at_center)
+                        range_heights = self.world_map[range_coords[:, 0], range_coords[:, 1]]
+                        peak_x, peak_y = range_coords[np.argmax(range_heights)]
+                        peak_name = f"Mount {self._generate_fantasy_name(name_fragments)}"
+                        features['peaks'].append({'x': peak_x, 'y': peak_y, 'name': peak_name, 'type': 'peak'})
+                else:
+                    features['areas'].append(final_feature)
+                
+                named_features_count += 1
+                named_types.add(f_type)
+                named_centers.append(center)
+                
         return features
 
     def create_image(self):
