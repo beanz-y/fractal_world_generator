@@ -82,65 +82,54 @@ def _numba_simulate_rainfall(height_map, land_mask, wind_direction):
     x_range, y_range = height_map.shape
     moisture_map = np.zeros_like(height_map, dtype=np.float32)
 
-    # Note: The 'parallel=True' argument was removed because the simulation loop
-    # has a sequential dependency (each step depends on the last), making it
-    # unsuitable for parallel execution. Numba still JIT-compiles this function
-    # for a significant speedup.
-    for i in range(y_range if wind_direction < 2 else x_range):
-        air_moisture = 1.0
-
-        # WARM-UP PASS for horizontal winds to ensure seamless wrapping
-        if wind_direction < 2:
-            for j_iter in range(x_range):
-                if wind_direction == 0: # West to East
-                    x, y, px, py = j_iter, i, (j_iter - 1 + x_range) % x_range, i
-                else: # East to West
-                    x, y, px, py = (x_range - 1 - j_iter), i, (x_range - 1 - ((j_iter - 1 + x_range) % x_range)), i
-
-                if not land_mask[x, y]:
+    # Simplified single-pass rainfall simulation
+    if wind_direction < 2:  # Horizontal winds (East-West)
+        for i in range(y_range):
+            air_moisture = 1.0
+            # Determine the direction of iteration
+            x_iterator = range(x_range) if wind_direction == 0 else range(x_range - 1, -1, -1)
+            for j in x_iterator:
+                # Calculate previous pixel's x-coordinate with wrapping
+                px = (j - 1 + x_range) % x_range if wind_direction == 0 else (j + 1) % x_range
+                
+                if not land_mask[j, i]:
                     air_moisture = min(1.0, air_moisture + 0.05)
                     continue
 
                 air_moisture += 0.002
-                elevation_diff = height_map[x, y] - height_map[px, py]
+                elevation_diff = height_map[j, i] - height_map[px, i]
 
                 precipitation = 0.015 * air_moisture
                 if elevation_diff > 0:
                     precipitation += elevation_diff * 12.0 * air_moisture * 0.001
                 
                 precipitation = min(air_moisture, precipitation)
-                # No precipitation is recorded here, just updating air moisture
+                moisture_map[j, i] = precipitation
                 air_moisture = max(0, air_moisture - precipitation)
-        
-        # RECORDING PASS for all wind directions
-        loop_len = x_range if wind_direction < 2 else y_range
-        for j_iter in range(loop_len):
-            # Determine coordinates based on wind direction
-            if wind_direction == 0: # West to East
-                x, y, px, py = j_iter, i, (j_iter - 1 + x_range) % x_range, i
-            elif wind_direction == 1: # East to West
-                x, y, px, py = (x_range - 1 - j_iter), i, (x_range - 1 - ((j_iter - 1 + x_range) % x_range)), i
-            elif wind_direction == 2: # North to South
-                x, y, px, py = i, j_iter, i, j_iter - 1
-                if j_iter == 0: px, py = x, y # No previous pixel
-            else: # South to North
-                x, y, px, py = i, (y_range - 1 - j_iter), i, (y_range - j_iter)
-                if j_iter == 0: px, py = x, y # No previous pixel
+    else:  # Vertical winds (North-South)
+        for i in range(x_range):
+            air_moisture = 1.0
+            y_iterator = range(y_range) if wind_direction == 2 else range(y_range - 1, -1, -1)
+            for j in y_iterator:
+                if (wind_direction == 2 and j == 0) or (wind_direction == 3 and j == y_range - 1):
+                    py = j
+                else:
+                    py = j - 1 if wind_direction == 2 else j + 1
 
-            if not land_mask[x, y]:
-                air_moisture = min(1.0, air_moisture + 0.05)
-                continue
+                if not land_mask[i, j]:
+                    air_moisture = min(1.0, air_moisture + 0.05)
+                    continue
+                
+                air_moisture += 0.002
+                elevation_diff = height_map[i, j] - height_map[i, py]
 
-            air_moisture += 0.002
-            elevation_diff = height_map[x, y] - height_map[px, py]
-
-            precipitation = 0.015 * air_moisture
-            if elevation_diff > 0:
-                precipitation += elevation_diff * 12.0 * air_moisture * 0.001
-            
-            precipitation = min(air_moisture, precipitation)
-            moisture_map[x, y] = precipitation # Set precipitation, not accumulate
-            air_moisture = max(0, air_moisture - precipitation)
+                precipitation = 0.015 * air_moisture
+                if elevation_diff > 0:
+                    precipitation += elevation_diff * 12.0 * air_moisture * 0.001
+                
+                precipitation = min(air_moisture, precipitation)
+                moisture_map[i, j] = precipitation
+                air_moisture = max(0, air_moisture - precipitation)
 
     return moisture_map
 
@@ -238,7 +227,8 @@ class FractalWorldGenerator:
     @staticmethod
     @numba.jit(nopython=True)
     def _numba_apply_erosion(heightmap, x_range, y_range, erosion_passes):
-        for i in range(erosion_passes):
+        for _ in range(erosion_passes):
+            # The core erosion logic remains the same
             source_map = heightmap.copy()
             for y in range(y_range):
                 for x in range(x_range):
@@ -610,23 +600,26 @@ class FractalWorldGenerator:
     
     def _find_features(self, mask, min_size=50):
         features = []
-        visited = np.zeros_like(mask, dtype=bool)
+        # Create a copy of the mask that can be modified
+        local_mask = mask.copy()
         x_range, y_range = self.x_range, self.y_range
 
         for y_start in range(y_range):
             for x_start in range(x_range):
-                if mask[x_start, y_start] and not visited[x_start, y_start]:
+                if local_mask[x_start, y_start]:
                     feature_coords = []
                     queue = deque([(x_start, y_start)])
-                    visited[x_start, y_start] = True
+                    # Mark the starting pixel as visited by setting it to False in the local mask
+                    local_mask[x_start, y_start] = False
                     
                     while queue:
                         px, py = queue.popleft()
                         feature_coords.append((px, py))
                         for dx, dy in [(0,1), (0,-1), (1,0), (-1,0)]:
                             nx, ny = (px + dx) % x_range, py + dy
-                            if 0 <= ny < y_range and mask[nx, ny] and not visited[nx, ny]:
-                                visited[nx, ny] = True
+                            if 0 <= ny < y_range and local_mask[nx, ny]:
+                                # Mark the next pixel as visited
+                                local_mask[nx, ny] = False
                                 queue.append((nx, ny))
                     
                     if len(feature_coords) >= min_size:

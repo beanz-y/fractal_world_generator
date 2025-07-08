@@ -105,111 +105,111 @@ class App(tk.Tk):
         row = 0
         self.controls_frame.grid_columnconfigure(1, weight=1)
 
-        # --- Generation Parameters ---
-        gen_frame = ttk.Labelframe(self.controls_frame, text="Generation")
-        gen_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
+        # Create a Notebook widget to hold the control tabs
+        notebook = ttk.Notebook(self.controls_frame)
+        notebook.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
+
+        # Create frames for each tab
+        gen_frame = ttk.Frame(notebook, padding="10")
+        climate_frame = ttk.Frame(notebook, padding="10")
+        civ_frame = ttk.Frame(notebook, padding="10")
+        display_frame = ttk.Frame(notebook, padding="10")
+        sim_frame = ttk.Frame(notebook, padding="10")
+
+        notebook.add(gen_frame, text='Generation')
+        notebook.add(climate_frame, text='Climate')
+        notebook.add(civ_frame, text='Lore')
+        notebook.add(display_frame, text='Display')
+        notebook.add(sim_frame, text='Simulator')
+
+        # --- Generation Parameters Tab ---
         gen_frame.grid_columnconfigure(1, weight=1)
-        
         g_row = 0
         self._create_entry_widget("Width:", self.params['width'], g_row, master=gen_frame); g_row += 1
         self._create_entry_widget("Height:", self.params['height'], g_row, master=gen_frame); g_row += 1
         
-        # World Size Preset Dropdown
         ttk.Label(gen_frame, text="World Scale:").grid(row=g_row, column=0, sticky='w', padx=5, pady=2);
-        world_size_combo = ttk.Combobox(gen_frame, textvariable=self.params['world_size_preset'], 
-                                   values=['Kingdom (~1,600 km)', 'Region (~6,400 km)', 'Continent (~16,000 km)'], 
+        world_size_combo = ttk.Combobox(gen_frame, textvariable=self.params['world_size_preset'],
+                                   values=['Kingdom (~1,600 km)', 'Region (~6,400 km)', 'Continent (~16,000 km)'],
                                    state="readonly")
         world_size_combo.grid(row=g_row, column=1, columnspan=2, sticky='ew', padx=5); g_row += 1
         world_size_combo.bind("<<ComboboxSelected>>", self.redraw_canvas)
 
-
         self._create_entry_widget("Seed:", self.params['seed'], g_row, include_random_button=True, master=gen_frame); g_row += 1
-        self._create_entry_widget("Ice Seed:", self.params['ice_seed'], g_row, include_random_button=True, master=gen_frame); g_row += 1
         self._create_slider_widget("Faults:", self.params['faults'], 1, 2000, g_row, master=gen_frame); g_row += 1
         self._create_slider_widget("Erosion:", self.params['erosion'], 0, 50, g_row, master=gen_frame); g_row += 1
-        
-        # --- Climate Parameters ---
-        climate_frame = ttk.Labelframe(self.controls_frame, text="Climate")
-        climate_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
+
+        # --- Climate Parameters Tab ---
         climate_frame.grid_columnconfigure(1, weight=1)
-        
         c_row = 0
+        self._create_entry_widget("Ice Seed:", self.params['ice_seed'], c_row, include_random_button=True, master=climate_frame); c_row += 1
         self._create_slider_widget("Water %:", self.params['water'], 0, 100, c_row, master=climate_frame); c_row += 1
         self._create_slider_widget("Ice %:", self.params['ice'], 0, 100, c_row, master=climate_frame); c_row += 1
         self._create_slider_widget("Altitude Temp. Effect:", self.params['altitude_temp_effect'], 0, 1, c_row, master=climate_frame); c_row += 1
 
         ttk.Label(climate_frame, text="Wind Direction:").grid(row=c_row, column=0, columnspan=2, sticky='w', padx=5); c_row += 1
-        wind_combo = ttk.Combobox(climate_frame, textvariable=self.params['wind_direction'], 
+        wind_combo = ttk.Combobox(climate_frame, textvariable=self.params['wind_direction'],
                                   values=['West to East', 'East to West', 'North to South', 'South to North'], state="readonly")
         wind_combo.grid(row=c_row, column=0, columnspan=2, sticky='ew', padx=5, pady=(0,5)); c_row += 1
 
-        # --- Civilization Parameters ---
-        civ_frame = ttk.Labelframe(self.controls_frame, text="Civilization & Features")
-        civ_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
+        # --- Civilization & Features Tab ---
         civ_frame.grid_columnconfigure(1, weight=1)
-        
         civ_row = 0
         ttk.Label(civ_frame, text="Theme:").grid(row=civ_row, column=0, columnspan=2, sticky='w', padx=5); civ_row += 1
-        theme_combo = ttk.Combobox(civ_frame, textvariable=self.params['theme'], 
-                                   values=['High Fantasy', 'Sci-Fi', 'Post-Apocalyptic'], state="readonly")
+        theme_combo = ttk.Combobox(civ_frame, textvariable=self.params['theme'],
+                                   values=['High Fantasy', 'Sci-Fi', 'Post-Apocalyptic', 'Feudal Japan', 'Lovecraftian'], state="readonly")
         theme_combo.grid(row=civ_row, column=0, columnspan=2, sticky='ew', padx=5, pady=(0,5)); civ_row += 1
         self._create_slider_widget("Settlements:", self.params['num_settlements'], 0, 500, civ_row, master=civ_frame); civ_row += 1
         self._create_slider_widget("Features:", self.params['num_features'], 0, 50, civ_row, master=civ_frame); civ_row += 1
 
-        # --- View and Display ---
-        view_frame = ttk.Labelframe(self.controls_frame, text="Display")
-        view_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
-        
-        style_frame = ttk.Frame(view_frame); style_frame.pack(fill=tk.X, padx=5, pady=2)
+        # --- Display Tab ---
+        display_frame.grid_columnconfigure(1, weight=1)
+        disp_row = 0
+        style_frame = ttk.Frame(display_frame); style_frame.grid(row=disp_row, columnspan=2, sticky='ew', padx=5, pady=2); disp_row+=1
         ttk.Label(style_frame, text="Style:").pack(side=tk.LEFT)
         ttk.Radiobutton(style_frame, text="Biome", variable=self.params['map_style'], value="Biome", command=self.on_style_change).pack(side=tk.LEFT)
         ttk.Radiobutton(style_frame, text="Terrain", variable=self.params['map_style'], value="Terrain", command=self.on_style_change).pack(side=tk.LEFT)
 
-        proj_frame = ttk.Frame(view_frame); proj_frame.pack(fill=tk.X, padx=5, pady=2)
+        proj_frame = ttk.Frame(display_frame); proj_frame.grid(row=disp_row, columnspan=2, sticky='ew', padx=5, pady=2); disp_row+=1
         ttk.Label(proj_frame, text="Projection:").pack(side=tk.LEFT)
         ttk.Radiobutton(proj_frame, text="2D", variable=self.params['projection'], value="Equirectangular", command=self.on_projection_change).pack(side=tk.LEFT)
         ttk.Radiobutton(proj_frame, text="Globe", variable=self.params['projection'], value="Orthographic", command=self.on_projection_change).pack(side=tk.LEFT)
 
-        self.rotation_frame = ttk.Labelframe(self.controls_frame, text="Globe Rotation")
-        self.rotation_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
+        self.rotation_frame = ttk.Labelframe(display_frame, text="Globe Rotation")
+        self.rotation_frame.grid(row=disp_row, columnspan=2, sticky='ew', padx=5, pady=5); disp_row += 1
         self._create_slider_widget("Yaw:", self.params['rotation_y'], -180, 180, 0, master=self.rotation_frame)
         self._create_slider_widget("Pitch:", self.params['rotation_x'], -90, 90, 1, master=self.rotation_frame)
-        
         self.params['rotation_y'].trace_add('write', lambda *_: self.redraw_canvas())
         self.params['rotation_x'].trace_add('write', lambda *_: self.redraw_canvas())
-        
-        ttk.Label(self.controls_frame, text="Preset Palettes:").grid(row=row, column=0, columnspan=3, sticky='w', padx=5); row += 1
-        self.palette_combobox = ttk.Combobox(self.controls_frame, values=list(PREDEFINED_PALETTES.keys()), state="readonly")
+
+        ttk.Label(display_frame, text="Preset Palettes:").grid(row=disp_row, column=0, columnspan=2, sticky='w', padx=5); disp_row += 1
+        self.palette_combobox = ttk.Combobox(display_frame, values=list(PREDEFINED_PALETTES.keys()), state="readonly")
         self.palette_combobox.set("Biome")
-        self.palette_combobox.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=(0,10)); row += 1
+        self.palette_combobox.grid(row=disp_row, columnspan=2, sticky='ew', padx=5, pady=(0,10)); disp_row += 1
         self.palette_combobox.bind("<<ComboboxSelected>>", self.apply_predefined_palette)
 
-        # --- Layers Frame ---
-        self.layers_frame = ttk.Labelframe(self.controls_frame, text="Layers")
-        self.layers_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
+        self.layers_frame = ttk.Labelframe(display_frame, text="Layers")
+        self.layers_frame.grid(row=disp_row, columnspan=2, sticky='ew', padx=5, pady=5); disp_row += 1
         self._create_layer_widgets()
-        
-        sim_frame = ttk.Labelframe(self.controls_frame, text="Age Simulator")
-        sim_frame.grid(row=row, columnspan=3, sticky='ew', padx=5, pady=5); row += 1
-        sim_frame.grid_columnconfigure(1, weight=1)
 
+        # --- Simulator Tab ---
+        sim_frame.grid_columnconfigure(1, weight=1)
         sf_row = 0
         ttk.Label(sim_frame, text="Event:").grid(row=sf_row, column=0, sticky='w', padx=5)
         event_combo = ttk.Combobox(sim_frame, textvariable=self.params['simulation_event'], values=['Ice Age Cycle'], state="readonly")
         event_combo.grid(row=sf_row, column=1, columnspan=2, sticky='ew', padx=5); sf_row += 1
-        
+
         ttk.Label(sim_frame, text="Speed:").grid(row=sf_row, column=0, sticky='w', padx=5)
         speed_combo = ttk.Combobox(sim_frame, textvariable=self.params['simulation_speed'], values=['Linear', 'Realistic (Ease In/Out)'], state="readonly")
         speed_combo.grid(row=sf_row, column=1, columnspan=2, sticky='ew', padx=5); sf_row += 1
 
         self._create_entry_widget("Thaw Ice Seed:", self.params['thaw_ice_seed'], sf_row, include_random_button=True, master=sim_frame); sf_row += 1
         self._create_entry_widget("Frames:", self.params['simulation_frames'], sf_row, master=sim_frame); sf_row += 1
-        
+
         self.run_sim_button = ttk.Button(sim_frame, text="Run Simulation", command=self.start_age_simulation, state=tk.DISABLED)
         self.run_sim_button.grid(row=sf_row, column=0, columnspan=3, sticky='ew', padx=5, pady=5)
-                
-        ttk.Separator(self.controls_frame, orient='horizontal').grid(row=row, columnspan=3, sticky='ew', pady=10); row += 1
         
+        # --- Controls Below the Tabs ---
         self.progress = ttk.Progressbar(self.controls_frame, orient='horizontal', mode='determinate')
         self.progress.grid(row=row, columnspan=3, sticky='ew', pady=(5,0)); row += 1
         self.status_label = ttk.Label(self.controls_frame, text="Ready")
@@ -221,7 +221,7 @@ class App(tk.Tk):
         self.generate_button.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
         self.random_button = ttk.Button(action_frame, text="New Random World", command=self.randomize_and_generate)
         self.random_button.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-        
+
         recolor_frame = ttk.Frame(self.controls_frame)
         recolor_frame.grid(row=row, columnspan=3, pady=5); row += 1
         self.recolor_button = ttk.Button(recolor_frame, text="Recolor Map", command=self.recolor_map, state=tk.DISABLED)
@@ -232,14 +232,14 @@ class App(tk.Tk):
         file_frame = ttk.Frame(self.controls_frame); file_frame.grid(row=row, columnspan=3, pady=5); row += 1
         ttk.Button(file_frame, text="Load Preset", command=self.load_preset).pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
         ttk.Button(file_frame, text="Save Preset", command=self.save_preset).pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-        
+
         save_frame = ttk.Frame(self.controls_frame); save_frame.grid(row=row, columnspan=3, pady=5); row += 1
         self.save_button = ttk.Button(save_frame, text="Save Image As...", command=self.save_image, state=tk.DISABLED)
         self.save_button.pack(fill=tk.X, expand=True, padx=5)
 
         self.frame_viewer_row = row; row += 1
         self.frame_viewer_frame = ttk.Labelframe(self.controls_frame, text="Frame Viewer")
-        
+
         frame_nav_frame = ttk.Frame(self.frame_viewer_frame)
         frame_nav_frame.pack(pady=5)
         self.prev_frame_button = ttk.Button(frame_nav_frame, text="< Prev", command=self.show_previous_frame, state=tk.DISABLED)

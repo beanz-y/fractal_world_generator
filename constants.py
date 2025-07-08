@@ -1,4 +1,4 @@
-# beanz-y/fractal_world_generator/fractal_world_generator-8b752999818ebdee7e3c696935b618f2a364ff8f/constants.py
+# beanz-y/fractal_world_generator/fractal_world_generator-1b06ea9b9ce13dc52af7794e24cc0c807dd45816/constants.py
 BIOME_DEFINITIONS = {
     'glacier':              {'idx': 52, 'shades': 4, 'temp_range': (0.0, 0.125), 'moist_range': (0.0, 1.0)},
     'alpine_glacier':       {'idx': 56, 'shades': 4, 'temp_range': (0.0, 0.15), 'moist_range': (0.0, 1.0)}, # New biome
@@ -54,10 +54,7 @@ THEME_NAME_FRAGMENTS = {
         'vowels': ['a', 'e', 'i', 'o', 'u', 'ae', 'ei', 'ia', 'io', 'ua'],
         'single': ['Arnor', 'Gondor', 'Mordor', 'Eriador', 'Rohan', 'Beleriand', 'Mithlond', 'Imladris', 'Lórien', 'Isengard', 'Dol Guldur', 'Moria', 'Angmar', 'Harad', 'Rhûn', 'Dale', 'Esgaroth'],
         'types': ['Castle', 'Keep', 'Village', 'Town', 'City', 'Citadel', 'Hold', 'Fortress', 'Tower', 'Haven', 'Vale', 'Wood', 'March', 'Fief'],
-        'ocean_prefixes': ['Endless', 'Great', 'Sunken', 'Whispering', 'Shrouded', 'Forgotten', 'Sundering', 'Eternal', 'Outer'],
         'ocean_suffixes': ['Expanse', 'Ocean', 'Deep', 'Void', 'Reach', 'Sea'],
-        'sea_prefixes': ['Jade', 'Singing', 'Broken', 'Frozen', 'Stormy', 'Inner', 'Shining', 'Restless'],
-        'mountain_prefixes': ['Dragon\'s', 'Giant\'s', 'Cloud', 'Stone', 'Iron', 'Shadow', 'Misty', 'Grey', 'Red', 'White', 'Black'],
         'mountain_suffixes': ['Spine', 'Teeth', 'Reach', 'Crown', 'Veins', 'Crags', 'Peaks', 'Hills', 'Mountains', 'Range'],
         'bay_suffixes': ['Sorrow', 'Whispers', 'Kings', 'Fools', 'Merchants', 'Drowned', 'Lost', 'Last', 'Ice']
     },
@@ -66,10 +63,7 @@ THEME_NAME_FRAGMENTS = {
         'suffixes': ['-7', ' Prime', ' Station', ' IX', ' Colony', ' Base', ' One', ' Omega', ' Terminus', ' Hub', ' Complex', ' Citadel', ' Point', ' Major', ' Minor', ' Spire', ' Array', ' Core', ' Drift', ' Facility', ' Gate', ' Grid', ' Harbor', ' Installation', ' Lab', ' Locus', ' Main', ' Node', ' Outpost', ' Port', ' Post', ' Relay', ' Ring', ' Secundus', ' Sector', ' Spoke', ' Terminal', ' Tower', ' Works', ' Zone'],
         'single': ['Aurelia', 'Elysia', 'Hadrian', 'Hyperion', 'Icarus', 'Janus', 'Kepler-186f', 'Magellan', 'Meridian', 'Olympus', 'Pandora', 'Prometheus', 'Solitude', 'Tantalus', 'Tartarus', 'Terminus', 'Vespera', 'Zion'],
         'types': ['Outpost', 'Colony', 'Station', 'Base', 'Habitat', 'Complex', 'Dome', 'Platform', 'Rig', 'Spire', 'Settlement', 'City'],
-        'ocean_prefixes': ['Primary', 'Galactic', 'Azure', 'Helium', 'Forbidden', 'Xeno', 'Methane', 'Hydrogen'],
         'ocean_suffixes': ['Ocean', 'Sea', 'Expanse', 'Deep', 'Void', 'Basin'],
-        'sea_prefixes': ['Cryo', 'Hydro', 'Methane', 'Irradiated', 'Plasma', 'Silicon'],
-        'mountain_prefixes': ['Titanium', 'Impact', 'Cryo-volcanic', 'Tectonic', 'Obsidian', 'Iridium'],
         'mountain_suffixes': ['Range', 'Uplift', 'Plateau', 'Massif', 'Spine', 'Shield'],
         'bay_suffixes': ['Landing', 'Sector', 'Zone', 'Port', 'Anchor', 'Approach', 'Gulf']
     },
@@ -78,11 +72,28 @@ THEME_NAME_FRAGMENTS = {
         'suffixes': ['-Town', ' Heap', ' Hope', ' Haven', ' Rock', ' Reach', ' Scrap', ' Yard', ' Camp', ' Refuge', ' Point', ' Out', ' Pit', ' Fall', ' End', ' Grave', ' Post', ' Fort', ' Scrap', 'Shanty', 'Hole', 'Den', 'Run', 'Gorge', 'Rest', 'Stop', 'Cross', 'Drift', 'Gulch', 'Sprawl', 'Yard'],
         'single': ['Salvation', 'Terminus', 'Last Hope', 'The Pitt', 'Junkyard', 'The Glow', 'Golgotha', 'Bartertown', 'Rapture', 'Bedlam', 'Elysium', 'Gomorrah', 'Bedrock'],
         'types': ['Camp', 'Settlement', 'Refuge', 'Fort', 'Scrap-town', 'Holdout', 'Warren', 'Den', 'Oasis', 'Stronghold', 'Bunker'],
-        'ocean_prefixes': ['Acid', 'Sludge', 'Poison', 'Dead', 'Black', 'Blight', 'Rotten', 'Glass'],
         'ocean_suffixes': ['Sea', 'Wastes', 'Mire', 'Deep', 'Expanse', 'Blackness'],
-        'sea_prefixes': ['Grime', 'Scab', 'Rust', 'Oil', 'Bile', 'Grit', 'Tar'],
-        'mountain_prefixes': ['Jagged', 'Shattered', 'Glass', 'Rusted', 'Concrete', 'Bone', 'Slag', 'Barbed'],
         'mountain_suffixes': ['Peaks', 'Sprawl', 'Heap', 'Ruin', 'Ridge', 'Spine', 'Scraps'],
         'bay_suffixes': ['Graveyard', 'Wreckage', 'Grave', 'End', 'Choke', 'Grief', 'Boneyard']
     },
+    'Feudal Japan': {
+        'prefixes': ['Aka', 'Asa', 'Ashi', 'Bessho', 'Chi', 'Date', 'Edo', 'Fuji', 'Gifu', 'Hagi', 'Hime', 'Hira', 'Iga', 'Ima', 'Inu', 'Kaga', 'Kai', 'Kawa', 'Kiyo', 'Kofu', 'Koga', 'Matsu', 'Mino', 'Mito', 'Naga', 'Oda', 'Sado', 'Saga', 'Sakai', 'Saru', 'Satsu', 'Sawa', 'Seki', 'Shima', 'Taka', 'Takeda', 'Tani', 'Toki', 'Ue', 'Yama', 'Yone', 'Zawa'],
+        'suffixes': ['-sawa', '-gawa', '-moto', '-yama', '-bayashi', '-shima', '-mura', '-sato', '-jo', '-ji', '-dani', '-oka', '-zaki', '-hashi', '-no-miya'],
+        'vowels': ['a', 'i', 'u', 'e', 'o'],
+        'single': ['Edo', 'Kyoto', 'Osaka', 'Nagoya', 'Kamakura', 'Nara', 'Heian-kyo', 'Kobe', 'Sakai', 'Hiraizumi'],
+        'types': ['Castle', 'Village', 'Town', 'Province', 'Temple', 'Shrine', 'Dojo', 'Post Town', 'Port', 'Clan Hold'],
+        'ocean_suffixes': ['-nada', ' Ocean', ' Sea'],
+        'mountain_suffixes': ['-yama', '-dake', '-san', ' Mountains', ' Range', ' Peaks'],
+        'bay_suffixes': ['-wan']
+    },
+    'Lovecraftian': {
+        'prefixes': ['Ark', 'Dun', 'Inns', 'Kings', 'Yugg', 'Rlyeh', 'Kadath', 'Leng', 'Sarn', 'Mna', 'Ulth', 'Celeph', 'Dylath', 'Yhan', 'Yith', 'Ktha', 'Ngran', 'Tsath', 'Yig'],
+        'suffixes': ['-mouth', '-wich', '-goth', '-oth', '-ath', '-ith', '-port', '-leth', '-og', 'oth', '-ug', '-ogua', '-thoon', '-leian'],
+        'vowels': ['a', 'e', 'i', 'o', 'u', 'y'],
+        'single': ['Arkham', 'Dunwich', 'Innsmouth', 'Kingsport', 'Ulthar', 'Celephais', 'Dylath-Leen', 'The Nameless City', 'Irem', "The Plateau of Leng", "R'lyeh"],
+        'types': ['Town', 'Village', 'City', 'Asylum', 'Sanitarium', 'Library', 'University', 'Seaport', 'Cult Stronghold', 'Ruin'],
+        'ocean_suffixes': ['Expanse', 'Void', 'Abyss', 'Sea of Madness', 'Cyclopean Deeps'],
+        'mountain_suffixes': ['Peaks of Thok', 'Mountains of Madness', 'Forbidden Range', 'Basalt Pillars', 'Sunken Spires'],
+        'bay_suffixes': ['Despair', 'Sunken', 'Madness', 'Whispers', 'Shadows', 'The Damned']
+    }
 }
