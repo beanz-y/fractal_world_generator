@@ -539,9 +539,24 @@ class FractalWorldGenerator:
                 biome_mask = (self.color_map >= start_idx) & (self.color_map < end_idx)
                 suitability[biome_mask] = BIOME_SUITABILITY[name]
 
+        # --- NEW: Latitude-Based Suitability ---
+        # Create a gradient where the equator is most suitable (1.0)
+        # and the poles are least suitable (0.0).
+        y_coords = np.arange(self.y_range)
+        # The term `np.abs(y_coords - self.y_range / 2.0)` calculates distance from the equator.
+        # Dividing by `(self.y_range / 2.0)` normalizes this to a 0-1 range.
+        latitude_penalty = 1.0 - (np.abs(y_coords - self.y_range / 2.0) / (self.y_range / 2.0))
+        # Add a bonus to make the effect more pronounced
+        latitude_suitability = latitude_penalty * 1.5
+        # Apply this to the entire suitability map. The suitability score at each
+        # latitude will be multiplied by its corresponding suitability value.
+        suitability *= latitude_suitability[np.newaxis, :]
+
+
         if np.any(self.land_mask):
             distance_to_water = self._calculate_distance_to_water(self.land_mask)
             water_bonus_mask = np.isfinite(distance_to_water)
+            # Add a bonus for being close to water.
             suitability[water_bonus_mask] += 0.8 / (distance_to_water[water_bonus_mask] ** 0.5)
 
         valid_land = suitability > 0
@@ -550,12 +565,14 @@ class FractalWorldGenerator:
         if land_altitudes.size > 0:
             min_land_alt, max_land_alt = np.min(land_altitudes), np.max(land_altitudes)
             if max_land_alt > min_land_alt:
+                # Penalize high altitudes
                 normalized_land_alt = (self.world_map[valid_land] - min_land_alt) / (max_land_alt - min_land_alt)
                 suitability[valid_land] -= normalized_land_alt * 0.7
 
         grad_x, grad_y = np.gradient(self.world_map.astype(np.float32))
         slope = np.sqrt(grad_x**2 + grad_y**2)
         if np.max(slope) > 0:
+            # Penalize steep slopes
             normalized_slope = slope / np.max(slope)
             suitability[valid_land] -= normalized_slope[valid_land] * 1.5
 
@@ -563,6 +580,7 @@ class FractalWorldGenerator:
             self.x_range, self.y_range, self.settlement_perm, self.settlement_grad3,
             scale=20.0, octaves=4, persistence=0.5, lacunarity=2.0
         )
+        # Add a final layer of noise for random variation
         suitability[valid_land] += ((settlement_noise_map[valid_land] + 1.0) / 2.0) * 0.2
         suitability[suitability < 0] = -9999.0
 
@@ -597,7 +615,7 @@ class FractalWorldGenerator:
                 name = self._generate_fantasy_name(name_fragments)
                 stype = random.choice(name_fragments['types'])
                 self.settlements.append({'x': x, 'y': y, 'name': name, 'type': 'settlement', 'stype': stype})
-    
+
     def _find_features(self, mask, min_size=50):
         features = []
         # Create a copy of the mask that can be modified

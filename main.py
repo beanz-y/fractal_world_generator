@@ -10,6 +10,8 @@ from collections import deque
 import json
 import os
 import time
+import numba # type: ignore
+from queue import Queue
 
 # Add the script's directory to the Python path to ensure local modules can be found.
 import sys
@@ -65,6 +67,8 @@ class App(tk.Tk):
         self.canvas.pack(fill=tk.BOTH, expand=True)
         
         self.palette = list(PREDEFINED_PALETTES["Biome"])
+
+        self.perspective_viewer_instance = None
         
         self.params = {
             'width': tk.IntVar(value=640), 'height': tk.IntVar(value=320),
@@ -127,7 +131,7 @@ class App(tk.Tk):
         g_row = 0
         self._create_entry_widget("Width:", self.params['width'], g_row, master=gen_frame); g_row += 1
         self._create_entry_widget("Height:", self.params['height'], g_row, master=gen_frame); g_row += 1
-        
+
         ttk.Label(gen_frame, text="World Scale:").grid(row=g_row, column=0, sticky='w', padx=5, pady=2);
         world_size_combo = ttk.Combobox(gen_frame, textvariable=self.params['world_size_preset'],
                                    values=['Kingdom (~1,600 km)', 'Region (~6,400 km)', 'Continent (~16,000 km)'],
@@ -188,7 +192,7 @@ class App(tk.Tk):
         self.palette_combobox.grid(row=disp_row, columnspan=2, sticky='ew', padx=5, pady=(0,10)); disp_row += 1
         self.palette_combobox.bind("<<ComboboxSelected>>", self.apply_predefined_palette)
 
-        self.layers_frame = ttk.Labelframe(display_frame, text="Layers")
+        self.layers_frame = ttk.Labelframe(display_frame, text="Layers & Tools") # Renamed for clarity
         self.layers_frame.grid(row=disp_row, columnspan=2, sticky='ew', padx=5, pady=5); disp_row += 1
         self._create_layer_widgets()
 
@@ -251,7 +255,7 @@ class App(tk.Tk):
         self.on_projection_change()
 
     def _create_layer_widgets(self):
-        """Creates the layer visibility control widgets."""
+        """Creates the layer visibility and tools control widgets."""
         for widget in self.layers_frame.winfo_children():
             widget.destroy()
 
@@ -262,9 +266,14 @@ class App(tk.Tk):
         ttk.Checkbutton(self.layers_frame, text="Features", variable=self.layer_visibility['Features']).grid(row=1, column=0, sticky='w', padx=5)
         
         placemark_frame = ttk.Frame(self.layers_frame)
-        placemark_frame.grid(row=2, column=0, columnspan=2, sticky='w')
+        placemark_frame.grid(row=2, column=0, columnspan=2, sticky='ew')
         ttk.Checkbutton(placemark_frame, text="Placemarks", variable=self.layer_visibility['Placemarks']).pack(side=tk.LEFT, padx=5)
         ttk.Button(placemark_frame, text="Place Custom Feature...", command=self.open_placemark_dialog).pack(side=tk.LEFT, padx=5)
+        
+        # --- NEW --- Add perspective view button here
+        perspective_frame = ttk.Frame(self.layers_frame)
+        perspective_frame.grid(row=3, column=0, columnspan=2, sticky='w', pady=(5,0))
+        ttk.Button(perspective_frame, text="Set Perspective View...", command=self.set_perspective_view).pack(side=tk.LEFT, padx=5)
 
     def _toggle_layer_visibility(self, layer_name):
         self.redraw_canvas()
@@ -334,7 +343,24 @@ class App(tk.Tk):
     
     def _add_placemark_at_click(self, event):
         if not self.generator or not self.placing_feature_info: return
-        
+
+        # --- NEW --- Handle the perspective view placement
+        if self.placing_feature_info.get('type') == 'PERSPECTIVE_VIEW':
+            img_x, img_y = self.canvas_to_image_coords(event.x, event.y)
+            if img_x is not None:
+                # Close the old viewer if it exists
+                if self.perspective_viewer_instance and self.perspective_viewer_instance.winfo_exists():
+                    self.perspective_viewer_instance.on_close()
+
+                # Create the new viewer and store the instance
+                self.perspective_viewer_instance = PerspectiveViewer(self, (img_x, img_y))
+            
+            self.placing_feature_info = None
+            self.canvas.config(cursor="")
+            self.status_label.config(text="Ready")
+            return
+
+        # Original placemark logic
         name = self.placing_feature_info['name']
         ptype = self.placing_feature_info['type']
         
@@ -350,7 +376,6 @@ class App(tk.Tk):
                 new_feature['type'] = 'range'
                 self.layers['natural_features']['ranges'].append(new_feature)
             else:
-                # Assign a generic area type, could be refined
                 new_feature['type'] = 'area' 
                 self.layers['natural_features']['areas'].append(new_feature)
         
@@ -1065,6 +1090,329 @@ class App(tk.Tk):
         self.frame_label.config(text=f"{index + 1} / {len(self.simulation_frames)}")
         self.prev_frame_button.config(state=tk.NORMAL if index > 0 else tk.DISABLED)
         self.next_frame_button.config(state=tk.NORMAL if index < len(self.simulation_frames) - 1 else tk.DISABLED)
+
+    def open_profile_viewer(self):
+        if not self.generator or self.generator.world_map is None:
+            tk.messagebox.showwarning("No Map Data", "Please generate a world before creating a profile view.")
+            return
+
+        y_coord = simpledialog.askinteger(
+            "Select Profile Row",
+            f"Enter the Y-coordinate (latitude) to create a profile from (0 to {self.generator.y_range - 1}):",
+            minvalue=0,
+            maxvalue=self.generator.y_range - 1
+        )
+
+        if y_coord is not None:
+            ProfileViewer(self, y_coord)
+
+    def draw_perspective_fov(self, camera_pos, angle_deg, fov_deg=72, length=50):
+        """Draws the Field of View cone on the main canvas."""
+        self.canvas.delete("fov_lines")
+
+        if self.params['projection'].get() != 'Equirectangular':
+            return
+
+        cam_img_x, cam_img_y = camera_pos
+        cam_canvas_x, cam_canvas_y = self.image_to_canvas_coords(cam_img_x, cam_img_y)
+
+        if cam_canvas_x is None:
+            return
+
+        angle_rad = math.radians(angle_deg)
+        fov_rad = math.radians(fov_deg)
+
+        left_angle = angle_rad - fov_rad / 2
+        right_angle = angle_rad + fov_rad / 2
+
+        # --- CORRECTION: Negate the sine component to flip the X-axis ---
+        end_left_x = cam_img_x - math.sin(left_angle) * length
+        end_left_y = cam_img_y + math.cos(left_angle) * length
+        end_right_x = cam_img_x - math.sin(right_angle) * length
+        end_right_y = cam_img_y + math.cos(right_angle) * length
+
+        end_left_canvas_x, end_left_canvas_y = self.image_to_canvas_coords(end_left_x, end_left_y)
+        end_right_canvas_x, end_right_canvas_y = self.image_to_canvas_coords(end_right_x, end_right_y)
+
+        if end_left_canvas_x is not None:
+            self.canvas.create_line(
+                cam_canvas_x, cam_canvas_y, end_left_canvas_x, end_left_canvas_y,
+                fill="yellow", width=2, tags="fov_lines"
+            )
+        if end_right_canvas_x is not None:
+            self.canvas.create_line(
+                cam_canvas_x, cam_canvas_y, end_right_canvas_x, end_right_canvas_y,
+                fill="yellow", width=2, tags="fov_lines"
+            )
+        self.canvas.create_oval(
+            cam_canvas_x - 4, cam_canvas_y - 4, cam_canvas_x + 4, cam_canvas_y + 4,
+            fill="yellow", outline="black", tags="fov_lines"
+        )
+
+    def clear_perspective_fov(self):
+        """Removes the FOV lines from the canvas."""
+        self.canvas.delete("fov_lines")
+
+    def set_perspective_view(self):
+        """Prepares the app to place a camera for the 3D perspective view."""
+        if not self.generator or not self.generator.pil_image:
+            tk.messagebox.showwarning("No Map", "Please generate a map first.")
+            return
+
+        # If a viewer is already open, bring it to the front instead of creating a new one
+        if self.perspective_viewer_instance and self.perspective_viewer_instance.winfo_exists():
+            self.perspective_viewer_instance.lift()
+            return
+            
+        self.placing_feature_info = {'type': 'PERSPECTIVE_VIEW'}
+        self.canvas.config(cursor="crosshair")
+        self.status_label.config(text="Click on the map to set the camera position for the 3D view...")
+
+@numba.jit(nopython=True)
+def _numba_scalar_clip(value, min_val, max_val):
+    """A numba-compatible function to clip a single scalar value."""
+    if value < min_val:
+        return min_val
+    elif value > max_val:
+        return max_val
+    else:
+        return value
+    
+@numba.jit(nopython=True, fastmath=True)
+def _numba_render_perspective(height_map, color_map, palette, camera_pos, view_angle_rad, fov, width, height, max_distance, camera_altitude_offset, vertical_exaggeration):
+    """
+    Performs the core ray casting calculation with configurable vertical exaggeration.
+    """
+    # vertical_exaggeration is now passed in as a parameter
+    map_h, map_w = height_map.shape
+    cam_x, cam_y = camera_pos
+
+    safe_cam_y = _numba_scalar_clip(int(cam_y), 0, map_h - 1)
+    safe_cam_x = _numba_scalar_clip(int(cam_x), 0, map_w - 1)
+
+    # Use the passed-in vertical_exaggeration
+    cam_height = (height_map[safe_cam_y, safe_cam_x] * vertical_exaggeration) + camera_altitude_offset
+
+    image_buffer = np.zeros((height, width, 3), dtype=np.uint8)
+
+    sky_color = np.array([135, 206, 235], dtype=np.uint8)
+    fog_color = np.array([170, 185, 195], dtype=np.uint8)
+    horizon = height // 2
+
+    for y in range(height):
+        if y < horizon:
+            image_buffer[y, :, :] = sky_color
+        else:
+            interp = min(1.0, (y - horizon) / horizon)
+            r = int(sky_color[0]*(1-interp) + fog_color[0]*interp)
+            g = int(sky_color[1]*(1-interp) + fog_color[1]*interp)
+            b = int(sky_color[2]*(1-interp) + fog_color[2]*interp)
+            image_buffer[y, :, 0], image_buffer[y, :, 1], image_buffer[y, :, 2] = r,g,b
+
+    water_level = np.percentile(height_map.ravel(), 60.0)
+
+    for i in range(width):
+        y_buffer = height
+
+        angle = view_angle_rad - fov / 2 + fov * i / width
+        sin_angle = -math.sin(angle)
+        cos_angle = math.cos(angle)
+
+        for z in range(1, int(max_distance)):
+            map_x = int(cam_x + sin_angle * z)
+            map_y = int(cam_y + cos_angle * z)
+
+            map_x_wrapped = map_x % map_w
+            if not (0 <= map_y < map_h): continue
+
+            terrain_height = height_map[map_y, map_x_wrapped]
+            color_index = color_map[map_y, map_x_wrapped]
+
+            is_water = 1 <= color_index <= 7 and terrain_height < water_level
+
+            # Use the passed-in vertical_exaggeration
+            display_height = water_level if is_water else terrain_height
+            display_height *= vertical_exaggeration
+
+            base_color = palette[color_index]
+
+            projected_height = int((cam_height - display_height) / z * 240 + horizon)
+
+            if projected_height >= y_buffer: continue
+
+            fog_factor = min(1.0, (z / max_distance)**1.5)
+            r = int(base_color[0]*(1-fog_factor) + fog_color[0]*fog_factor)
+            g = int(base_color[1]*(1-fog_factor) + fog_color[1]*fog_factor)
+            b = int(base_color[2]*(1-fog_factor) + fog_color[2]*fog_factor)
+
+            draw_start_y = _numba_scalar_clip(projected_height, 0, height)
+            draw_end_y = _numba_scalar_clip(y_buffer, 0, height)
+
+            for y in range(draw_start_y, draw_end_y):
+                image_buffer[y, i, 0] = r
+                image_buffer[y, i, 1] = g
+                image_buffer[y, i, 2] = b
+
+            y_buffer = projected_height
+            if y_buffer <= 0: break
+
+    return image_buffer
+
+class PerspectiveViewer(tk.Toplevel):
+    def __init__(self, parent, camera_pos):
+        super().__init__(parent)
+        self.parent = parent
+        self.generator = parent.generator
+        self.camera_pos = camera_pos
+        self.view_angle = 180.0
+        self.image = None
+        self.tk_image = None
+        self.rendering_thread = None
+        self._is_rendering = threading.Event()
+
+        # --- NEW: Variables for UI controls ---
+        self.camera_altitude = tk.DoubleVar(value=40.0)
+        self.vertical_exaggeration = tk.DoubleVar(value=2.5)
+
+        self.title(f"Perspective View from {self.camera_pos}")
+        self.geometry("800x680") # Made window taller for the new slider
+
+        self.render_queue = Queue()
+
+        main_frame = ttk.Frame(self)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        self.canvas = tk.Canvas(main_frame, bg="black")
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.canvas.bind("<Configure>", lambda e: self.display_image(rerender=False))
+
+        controls_frame = ttk.Frame(self)
+        controls_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        self.pan_left_button = ttk.Button(controls_frame, text="Pan Left", command=lambda: self.pan(-15.0))
+        self.pan_left_button.pack(side=tk.LEFT, padx=5)
+        self.pan_right_button = ttk.Button(controls_frame, text="Pan Right", command=lambda: self.pan(15.0))
+        self.pan_right_button.pack(side=tk.LEFT, padx=5)
+        self.save_button = ttk.Button(controls_frame, text="Save Image...", command=self.save_image, state=tk.DISABLED)
+        self.save_button.pack(side=tk.RIGHT, padx=5)
+
+        # --- NEW: Control Sliders Frame ---
+        sliders_frame = ttk.Frame(self)
+        sliders_frame.pack(fill=tk.X, padx=10, pady=(5, 10))
+        sliders_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(sliders_frame, text="Altitude:").grid(row=0, column=0, sticky='w', padx=5)
+        altitude_slider = ttk.Scale(
+            sliders_frame, from_=5, to=500, orient='horizontal',
+            variable=self.camera_altitude, command=self.on_slider_change
+        )
+        altitude_slider.grid(row=0, column=1, sticky='ew', padx=5)
+
+        ttk.Label(sliders_frame, text="Exaggeration:").grid(row=1, column=0, sticky='w', padx=5)
+        exaggeration_slider = ttk.Scale(
+            sliders_frame, from_=1.0, to=15.0, orient='horizontal',
+            variable=self.vertical_exaggeration, command=self.on_slider_change
+        )
+        exaggeration_slider.grid(row=1, column=1, sticky='ew', padx=5)
+
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+        self.update_parent_fov()
+        self.start_render_thread()
+        self.check_render_queue()
+
+    def on_slider_change(self, value):
+        """Callback for when any slider is moved."""
+        if not self._is_rendering.is_set():
+            self.start_render_thread()
+
+    def update_parent_fov(self):
+        self.parent.draw_perspective_fov(self.camera_pos, self.view_angle)
+
+    def on_close(self):
+        self._is_rendering.set()
+        self.parent.clear_perspective_fov()
+        self.parent.perspective_viewer_instance = None
+        self.destroy()
+
+    def pan(self, angle_change):
+        if self._is_rendering.is_set(): return
+        self.view_angle += angle_change
+        self.update_parent_fov()
+        self.start_render_thread()
+
+    def start_render_thread(self):
+        self._is_rendering.set()
+        self.save_button.config(state=tk.DISABLED)
+        self.pan_left_button.config(state=tk.DISABLED)
+        self.pan_right_button.config(state=tk.DISABLED)
+
+        self.canvas.delete("render_text")
+        self.canvas.create_text(
+            self.canvas.winfo_width() / 2, self.canvas.winfo_height() / 2,
+            text="Rendering...", fill="yellow", font=("Arial", 24, "bold"), tags="render_text"
+        )
+
+        self.rendering_thread = threading.Thread(target=self.render_view_threaded, daemon=True)
+        self.rendering_thread.start()
+
+    def render_view_threaded(self):
+        width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
+        if width < 10 or height < 10: width, height = 800, 600
+
+        supersampling_factor = 2
+        render_w = width * supersampling_factor
+        render_h = height * supersampling_factor
+
+        fov = math.pi / 2.5
+        max_distance = self.generator.x_range / 1.5
+        palette_np = np.array(self.generator.palette, dtype=np.uint8)
+
+        # Get the current values from the Tkinter variables
+        current_altitude = self.camera_altitude.get()
+        current_exaggeration = self.vertical_exaggeration.get()
+
+        image_data = _numba_render_perspective(
+            self.generator.world_map.T, self.generator.color_map.T, palette_np,
+            self.camera_pos, math.radians(self.view_angle),
+            fov, render_w, render_h, max_distance,
+            camera_altitude_offset=current_altitude,
+            vertical_exaggeration=current_exaggeration # Pass the new exaggeration here
+        )
+
+        if self._is_rendering.is_set():
+            high_res_image = Image.fromarray(image_data, 'RGB')
+            final_image = high_res_image.resize((width, height), Image.Resampling.LANCZOS)
+            self.render_queue.put(final_image)
+
+    def check_render_queue(self):
+        try:
+            new_image = self.render_queue.get_nowait()
+            self.image = new_image
+            self.display_image(rerender=True)
+            self._is_rendering.clear()
+            self.save_button.config(state=tk.NORMAL)
+            self.pan_left_button.config(state=tk.NORMAL)
+            self.pan_right_button.config(state=tk.NORMAL)
+        except Exception:
+            pass
+        finally:
+            if self.winfo_exists():
+                self.after(100, self.check_render_queue)
+
+    def display_image(self, rerender=True):
+        if self.image:
+            if rerender:
+                self.canvas.delete("all")
+            self.tk_image = ImageTk.PhotoImage(self.image)
+            self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image)
+
+    def save_image(self):
+        if self.image:
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".png", filetypes=[("PNG Image", "*.png")],
+                title="Save Perspective View As"
+            )
+            if file_path: self.image.save(file_path)
 
 class PlacemarkDialog(simpledialog.Dialog):
     def body(self, master):
