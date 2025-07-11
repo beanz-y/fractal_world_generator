@@ -816,6 +816,7 @@ class App(tk.Tk):
         projection = self.params['projection'].get()
 
         if projection == 'Orthographic':
+            # Globe view logic remains the same
             source_array = np.array(self.generator.pil_image.convert('RGB'))
             canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
             if canvas_w <= 1 or canvas_h <= 1: return
@@ -829,7 +830,7 @@ class App(tk.Tk):
             self.tk_image = ImageTk.PhotoImage(final_image)
             self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image, tags="map_image")
 
-        else: # Equirectangular view
+        else: # --- MODIFIED: Equirectangular view with aspect-ratio correction ---
             img_w, img_h = self.generator.pil_image.size
             view_w, view_h = img_w / self.zoom, img_h / self.zoom
             
@@ -853,10 +854,29 @@ class App(tk.Tk):
             canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
             if canvas_w <= 1 or canvas_h <=1: return
             
-            resized_image = stitched_image.resize((canvas_w, canvas_h), Image.Resampling.NEAREST)
-            self.tk_image = ImageTk.PhotoImage(resized_image)
-            self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image, tags="map_image")
+            # Calculate new size to preserve aspect ratio
+            img_aspect = view_w / view_h
+            canvas_aspect = canvas_w / canvas_h
             
+            if img_aspect > canvas_aspect:
+                new_w = canvas_w
+                new_h = int(new_w / img_aspect)
+            else:
+                new_h = canvas_h
+                new_w = int(new_h * img_aspect)
+
+            resized_image = stitched_image.resize((new_w, new_h), Image.Resampling.NEAREST)
+            self.tk_image = ImageTk.PhotoImage(resized_image)
+            
+            # Center the image on the canvas
+            paste_x = (canvas_w - new_w) // 2
+            paste_y = (canvas_h - new_h) // 2
+            
+            self.canvas.create_image(paste_x, paste_y, anchor=tk.NW, image=self.tk_image, tags="map_image")
+            
+            # Store render details for coordinate conversion
+            self.canvas_render_details = {'paste_x': paste_x, 'paste_y': paste_y, 'render_w': new_w, 'render_h': new_h}
+
             self._draw_layers_on_canvas_2d()
             self._draw_scale_bar()
 
@@ -920,7 +940,6 @@ class App(tk.Tk):
                 )
 
     def image_to_canvas_coords(self, img_x, img_y):
-        """Converts full map image coordinates to on-screen canvas coordinates for the current projection."""
         if not hasattr(self, 'generator') or not self.generator.pil_image: return None, None
         
         canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
@@ -932,7 +951,10 @@ class App(tk.Tk):
                 self.params['rotation_y'].get(), self.params['rotation_x'].get(),
                 self.generator.x_range, self.generator.y_range
             )
-        else: # Equirectangular
+        else: # --- MODIFIED: Equirectangular coordinate conversion ---
+            render_details = getattr(self, 'canvas_render_details', None)
+            if not render_details: return None, None
+
             img_w, img_h = self.generator.pil_image.size
             view_w, view_h = img_w / self.zoom, img_h / self.zoom
             
@@ -940,7 +962,11 @@ class App(tk.Tk):
             if abs(dx) > img_w / 2: dx -= np.sign(dx) * img_w
             dy = img_y - self.view_offset[1]
             
-            canvas_x, canvas_y = (dx / view_w) * canvas_w, (dy / view_h) * canvas_h
+            relative_x = (dx / view_w) * render_details['render_w']
+            relative_y = (dy / view_h) * render_details['render_h']
+            
+            canvas_x = relative_x + render_details['paste_x']
+            canvas_y = relative_y + render_details['paste_y']
             
             if 0 <= canvas_x <= canvas_w and 0 <= canvas_y <= canvas_h:
                 return canvas_x, canvas_y
@@ -950,27 +976,33 @@ class App(tk.Tk):
         if not hasattr(self, 'generator') or not self.generator or not self.generator.pil_image: return None, None
 
         if self.params['projection'].get() == 'Orthographic':
-            canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
             return canvas_coords_to_map(
-                canvas_x, canvas_y, canvas_w, canvas_h,
+                canvas_x, canvas_y, self.canvas.winfo_width(), self.canvas.winfo_height(),
                 self.params['rotation_y'].get(), self.params['rotation_x'].get(),
                 self.generator.x_range, self.generator.y_range
             )
-        else:
-            img_w, img_h = self.generator.pil_image.size
-            canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
-            if canvas_w == 0 or canvas_h == 0: return None, None
+        else: # --- MODIFIED: Equirectangular coordinate conversion ---
+            render_details = getattr(self, 'canvas_render_details', None)
+            if not render_details: return None, None
+
+            if not (render_details['paste_x'] <= canvas_x < render_details['paste_x'] + render_details['render_w'] and
+                    render_details['paste_y'] <= canvas_y < render_details['paste_y'] + render_details['render_h']):
+                return None, None
+
+            relative_x = canvas_x - render_details['paste_x']
+            relative_y = canvas_y - render_details['paste_y']
             
-            percent_x, percent_y = canvas_x / canvas_w, canvas_y / canvas_h
+            percent_x = relative_x / render_details['render_w']
+            percent_y = relative_y / render_details['render_h']
+
+            img_w, img_h = self.generator.pil_image.size
             view_w = img_w / self.zoom
             view_h = img_h / self.zoom
             
             img_x = self.view_offset[0] + (percent_x * view_w)
             img_y = self.view_offset[1] + (percent_y * view_h)
             
-            img_x_wrapped = img_x % img_w
-            
-            return int(img_x_wrapped), int(img_y)
+            return int(img_x % img_w), int(img_y)
 
     def _on_zoom(self, event):
         if not self.generator or not self.generator.pil_image: return
@@ -1069,106 +1101,87 @@ class App(tk.Tk):
             return
 
         file_path = filedialog.asksaveasfilename(
-            defaultextension=".png",
-            filetypes=[("PNG Image", "*.png"), ("All Files", "*.*")],
-            title="Save Image As"
+            defaultextension=".png", filetypes=[("PNG Image", "*.png")], title="Save Image As"
         )
-        if not file_path:
-            return
+        if not file_path: return
 
-        # --- Create a high-quality export image ---
         export_image = None
         
         # Case 1: The current view is the 3D Globe
         if self.params['projection'].get() == 'Orthographic':
-            # To get a high-quality export, we'll render the globe at a larger size
-            export_size = 1600 # e.g., 1600x1600 pixels
+            export_size = 1600
             source_array = np.array(self.generator.pil_image.convert('RGB'))
             rot_y, rot_x = self.params['rotation_y'].get(), self.params['rotation_x'].get()
-
-            # Render the base globe
             new_img_array = render_globe(source_array, export_size, export_size, rot_y, rot_x, self.generator.x_range, self.generator.y_range)
             export_image = Image.fromarray(new_img_array).convert('RGBA')
-            
-            # Draw all layers directly onto this new high-res image
             self._draw_layers_on_image(export_image)
 
         # Case 2: The current view is the 2D Map
-        else: # Equirectangular
-            img_w, img_h = self.generator.pil_image.size
-            view_w, view_h = img_w / self.zoom, img_h / self.zoom
+        else:
+            canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
+            export_image = Image.new("RGB", (canvas_w, canvas_h))
+            
+            if hasattr(self, 'tk_image'):
+                resized_map_image = self.tk_image
+                paste_x = self.canvas_render_details.get('paste_x', 0)
+                paste_y = self.canvas_render_details.get('paste_y', 0)
+                export_image.paste(ImageTk.getimage(resized_map_image), (paste_x, paste_y))
 
-            # Recreate the stitched image that the user currently sees
-            x0 = self.view_offset[0]
-            y0 = max(0, min(self.view_offset[1], img_h - view_h))
-            x0_wrapped = x0 % img_w
-            
-            box1 = (x0_wrapped, y0, min(img_w, x0_wrapped + view_w), y0 + view_h)
-            crop1 = self.generator.pil_image.crop(box1)
-            
-            stitched_image = Image.new('RGB', (int(view_w), int(view_h)))
-            stitched_image.paste(crop1, (0, 0))
-            
-            if x0_wrapped + view_w > img_w:
-                remaining_w = (x0_wrapped + view_w) - img_w
-                box2 = (0, y0, remaining_w, y0 + view_h)
-                crop2 = self.generator.pil_image.crop(box2)
-                stitched_image.paste(crop2, (crop1.width, 0))
-            
-            # --- Draw layers onto the stitched image ---
-            export_image = stitched_image.convert('RGBA')
             draw = ImageDraw.Draw(export_image, 'RGBA')
-
-            try:
-                font_l = ImageFont.truetype("arialbd.ttf", size=32)
-                font_m = ImageFont.truetype("arial.ttf", size=24)
-                font_s = ImageFont.truetype("arial.ttf", size=20)
-            except IOError:
-                font_l = ImageFont.load_default()
-                font_m = ImageFont.load_default()
-                font_s = ImageFont.load_default()
-
-            # Helper function to get scaled coordinates for the export image
-            def get_export_coords(img_x, img_y):
-                dx = img_x - self.view_offset[0]
-                if abs(dx) > img_w / 2: dx -= np.sign(dx) * img_w
-                dy = img_y - self.view_offset[1]
-                
-                export_x = (dx / view_w) * export_image.width
-                export_y = (dy / view_h) * export_image.height
-                
-                if 0 <= export_x <= export_image.width and 0 <= export_y <= export_image.height:
-                    return export_x, export_y
-                return None, None
-
-            # Draw all features, settlements, and placemarks onto the export_image
-            # This logic mirrors the canvas drawing but uses ImageDraw
-            if self.layer_visibility['Features'].get():
-                for area in self.layers['natural_features'].get('areas', []):
-                    ex, ey = get_export_coords(*area['center'])
-                    if ex is not None: draw.text((ex, ey), area['name'], font=font_l, fill="#DDEEFF", anchor="mm", stroke_width=2, stroke_fill="black")
-                for r in self.layers['natural_features'].get('ranges', []):
-                    ex, ey = get_export_coords(*r['center'])
-                    if ex is not None: draw.text((ex, ey), r['name'], font=font_l, fill="#D2B48C", anchor="mm", stroke_width=2, stroke_fill="black")
-                for peak in self.layers['natural_features'].get('peaks', []):
-                    ex, ey = get_export_coords(peak['x'], peak['y'])
-                    if ex is not None: draw.text((ex, ey), f"▲ {peak['name']}", font=font_m, fill="white", anchor="ms", stroke_width=2, stroke_fill="black")
             
-            if self.layer_visibility['Settlements'].get():
-                for s in self.layers['settlements']:
-                    ex, ey = get_export_coords(s['x'], s['y'])
-                    if ex is not None:
-                        draw.ellipse((ex-5, ey-5, ex+5, ey+5), fill='white', outline='black', width=2)
-                        draw.text((ex+8, ey), s['name'], font=font_s, fill="white", anchor="lm", stroke_width=2, stroke_fill="black")
+            try:
+                font_l = ImageFont.truetype("arialbd.ttf", size=14)
+                font_m = ImageFont.truetype("arial.ttf", size=10)
+                font_s = ImageFont.truetype("arial.ttf", size=9)
+            except IOError:
+                font_l, font_m, font_s = ImageFont.load_default(), ImageFont.load_default(), ImageFont.load_default()
 
-            if self.layer_visibility['Placemarks'].get():
-                for pm in self.layers['placemarks']:
-                    ex, ey = get_export_coords(pm['x'], pm['y'])
-                    if ex is not None:
-                        draw.ellipse((ex-6, ey-6, ex+6, ey+6), fill='red', outline='black', width=2)
-                        draw.text((ex+9, ey), pm['name'], font=font_m, fill="white", anchor="lm", stroke_width=2, stroke_fill="black")
+            def draw_outlined_text(pos, text, font, fill, **kwargs):
+                x, y = pos
+                stroke_color = 'black'
+                draw.text((x-1, y), text, font=font, fill=stroke_color, **kwargs)
+                draw.text((x+1, y), text, font=font, fill=stroke_color, **kwargs)
+                draw.text((x, y-1), text, font=font, fill=stroke_color, **kwargs)
+                draw.text((x, y+1), text, font=font, fill=stroke_color, **kwargs)
+                draw.text(pos, text, font=font, fill=fill, **kwargs)
+            
+            all_layers = [
+                (self.layers['natural_features'].get('areas', []), font_l, "#DDEEFF"),
+                (self.layers['natural_features'].get('ranges', []), font_l, "#D2B48C"),
+                (self.layers['natural_features'].get('peaks', []), font_m, "white"),
+                (self.layers['settlements'], font_s, "white"),
+                (self.layers['placemarks'], font_m, "white")
+            ]
 
-        # Finally, save the composed image
+            for item_list, font, color in all_layers:
+                if not item_list: continue
+                item_type = item_list[0].get('type')
+                if (item_type == 'settlement' and not self.layer_visibility['Settlements'].get()) or \
+                   (item_type == 'placemark' and not self.layer_visibility['Placemarks'].get()) or \
+                   (item_type not in ['settlement', 'placemark'] and not self.layer_visibility['Features'].get()):
+                    continue
+
+                for item in item_list:
+                    item_x = item.get('x') if 'x' in item else item.get('center', [0,0])[0]
+                    item_y = item.get('y') if 'y' in item else item.get('center', [0,0])[1]
+                    
+                    canvas_x, canvas_y = self.image_to_canvas_coords(item_x, item_y)
+                    if canvas_x is not None:
+                        if item_type == 'peak':
+                            # --- CORRECTION ---
+                            # Changed anchor from "s" to "ms" (middle-start)
+                            draw_outlined_text((canvas_x, canvas_y-8), item['name'], font, color, anchor="ms")
+                            draw.text((canvas_x, canvas_y), "▲", font=("Arial", 12, "bold"), fill="white", anchor="mm")
+                            draw.text((canvas_x, canvas_y), "▲", font=("Arial", 12), fill="black", anchor="mm")
+                        elif item_type in ['area', 'range', 'ocean', 'sea', 'lake', 'desert', 'jungle', 'forest', 'wastes']:
+                             draw_outlined_text((canvas_x, canvas_y), item['name'], font, color, anchor="mm")
+                        elif item_type == 'settlement':
+                            draw.ellipse((canvas_x-3, canvas_y-3, canvas_x+3, canvas_y+3), fill='white', outline='black')
+                            draw_outlined_text((canvas_x+5, canvas_y), item['name'], font, color, anchor="lm")
+                        elif item_type == 'placemark':
+                            draw.ellipse((canvas_x-4, canvas_y-4, canvas_x+4, canvas_y+4), fill='red', outline='black')
+                            draw_outlined_text((canvas_x+6, canvas_y), item['name'], font, color, anchor="lm")
+
         if export_image:
             try:
                 export_image.save(file_path)
