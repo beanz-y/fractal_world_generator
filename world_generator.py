@@ -272,7 +272,6 @@ class FractalWorldGenerator:
         
         temperature = np.tile(latitude_temp, (self.x_range, 1)) - (altitude_norm * altitude_temp_effect)
         
-        # Apply the global temperature offset for simulations
         temperature -= temp_offset
         temperature = np.clip(temperature, 0, 1)
 
@@ -298,15 +297,15 @@ class FractalWorldGenerator:
             moisture /= max_total_moisture
 
         if self.progress_callback: self.progress_callback(70, "Applying biomes: Classifying biomes...")
-
-        lat_factor = np.abs(y_coords - self.y_range / 2.0) / (self.y_range / 2.0)
-        non_polar_mask = (lat_factor < 0.85)
         
+        # --- MODIFICATION: Removed all polar exclusion logic ---
+        # The logic will now apply biomes to ALL land, letting the ice cap step overwrite it later.
+
+        # First, handle alpine glaciers which can appear at any latitude on high mountains
         alpine_props = BIOME_DEFINITIONS['alpine_glacier']
         alpine_mask = (altitude_norm > 0.7) & \
                       (temperature < alpine_props['temp_range'][1]) & \
-                      land_mask & \
-                      np.tile(non_polar_mask, (self.x_range, 1))
+                      land_mask
 
         if np.any(alpine_mask):
             base_color = alpine_props['idx']
@@ -315,10 +314,12 @@ class FractalWorldGenerator:
             color_indices = base_color + np.floor(alpine_altitudes * (num_shades - 0.01))
             self.color_map[alpine_mask] = color_indices.astype(np.uint8)
 
+        # The remaining land to be colored is any land that isn't an alpine glacier
         remaining_land_mask = land_mask & ~alpine_mask
         
+        # Apply all other biomes based on their properties
         for name, props in BIOME_DEFINITIONS.items():
-            if name == 'alpine_glacier' or name == 'glacier':
+            if name in ['glacier', 'alpine_glacier']:
                 continue
 
             t_min, t_max = props['temp_range']
@@ -335,7 +336,8 @@ class FractalWorldGenerator:
                 color_indices = base_color + np.floor(biome_altitudes * (num_shades - 0.01))
                 self.color_map[biome_mask] = color_indices.astype(np.uint8)
         
-        uncolored_land_mask = (self.color_map == 0) & land_mask
+        # Fill any remaining uncolored land with tundra as a fallback
+        uncolored_land_mask = (self.color_map == 0) & remaining_land_mask
         if np.any(uncolored_land_mask):
             tundra_props = BIOME_DEFINITIONS['tundra']
             base_color = tundra_props['idx']
@@ -362,31 +364,28 @@ class FractalWorldGenerator:
 
         ice_score_map = (1.2 * latitude_factor) + (0.4 * noise_map)
         
-        valid_pixels_mask = (self.color_map != 0)
-
-        if not np.any(valid_pixels_mask): return
-
-        ice_threshold = np.percentile(ice_score_map[valid_pixels_mask], 100 - percent_ice)
-        ice_mask = (ice_score_map >= ice_threshold) & valid_pixels_mask
+        # --- MODIFICATION: Ice can form over water or land ---
+        # We calculate the threshold based on all pixels, not just land/valid pixels
+        ice_threshold = np.percentile(ice_score_map, 100 - percent_ice)
+        
+        # The final ice mask is anywhere the score exceeds the threshold. This is absolute.
+        ice_mask = ice_score_map >= ice_threshold
         if not np.any(ice_mask): return
 
+        # Get all world altitudes, not just land, for shading the ice correctly
         ice_altitudes = self.world_map[ice_mask]
-        min_ice_alt, max_ice_alt = np.min(ice_altitudes), np.max(ice_altitudes)
+        min_ice_alt, max_ice_alt = np.min(self.world_map), np.max(self.world_map)
         if max_ice_alt == min_ice_alt: max_ice_alt = min_ice_alt + 1
         
         ice_base_color_start = BIOME_DEFINITIONS['glacier']['idx']
         ice_num_base_colors = BIOME_DEFINITIONS['glacier']['shades']
         
-        original_colors_under_ice = self.color_map[ice_mask]
-        
         normalized_ice_alts = (ice_altitudes - min_ice_alt) / (max_ice_alt - min_ice_alt)
-        base_ice_colors = ice_base_color_start + np.floor(normalized_ice_alts * (ice_num_base_colors - 0.01))
+        final_ice_colors = ice_base_color_start + np.floor(normalized_ice_alts * (ice_num_base_colors - 0.01))
         
-        terrain_modifier = (original_colors_under_ice % 2)
-        final_ice_colors = base_ice_colors - terrain_modifier
-        
+        # This is the crucial step: forcefully overwrite the color map with ice colors.
         self.color_map[ice_mask] = final_ice_colors.astype(np.uint8)
-    
+
     def generate(self):
         if self.progress_callback: self.progress_callback(0, "Generating faults...")
         self.world_map = np.full((self.x_range, self.y_range), self.INT_MIN_PLACEHOLDER, dtype=np.int32)
@@ -451,13 +450,19 @@ class FractalWorldGenerator:
         land_min, land_max = water_level_threshold, max_z
         if land_max == land_min: land_max = land_min + 1
         
+        # --- MODIFICATION: Enforce strict order of operations ---
+        
+        # 1. First, apply biomes to all land.
         if map_style == 'Biome':
             self._apply_biomes(self.land_mask, land_min, land_max, temp_offset)
         else: # Terrain style
             normalized_altitude = (self.world_map[self.land_mask] - land_min) / (land_max - land_min)
             self.color_map[self.land_mask] = 16 + np.floor(15.99 * normalized_altitude)
 
+        # 2. Store this biome map as the "before ice" version.
         self.color_map_before_ice = self.color_map.copy()
+
+        # 3. Finally, apply the ice caps, which will definitively overwrite any biome underneath.
         self._apply_ice_caps(percent_ice)
 
     def _calculate_distance_to_water(self, land_mask):
@@ -511,25 +516,23 @@ class FractalWorldGenerator:
             'taiga': 0.4, 'desert': 0.2, 'tundra': 0.1
         }
 
-        # Start with a base suitability map of all zeros.
+        # 1. Establish BASE suitability from biomes.
+        # This creates a hard filter; biomes not in the dictionary (e.g., glaciers) are excluded.
         suitability = np.zeros(self.world_map.shape, dtype=np.float32)
+        for name, score in BIOME_SUITABILITY.items():
+            props = BIOME_DEFINITIONS[name]
+            start_idx, end_idx = props['idx'], props['idx'] + props.get('shades', 1)
+            biome_mask = (self.color_map >= start_idx) & (self.color_map < end_idx)
+            suitability[biome_mask] = score
         
-        # 1. Establish BASE suitability from biomes. Ice/Glaciers will have a score of 0.
-        for name, props in BIOME_DEFINITIONS.items():
-            if name in BIOME_SUITABILITY:
-                start_idx, end_idx = props['idx'], props['idx'] + props.get('shades', 1)
-                biome_mask = (self.color_map >= start_idx) & (self.color_map < end_idx)
-                suitability[biome_mask] = BIOME_SUITABILITY[name]
-        
-        # --- MODIFICATION START: Corrected Application of Modifiers ---
-
         # 2. Apply global modifiers using broadcasting. This is simpler and avoids indexing errors.
         
         # Apply Latitude Modifier to the entire map.
         # Uninhabitable areas (suitability=0) will remain 0.
         y_coords = np.arange(self.y_range)
         latitude_score = 1.0 - (np.abs(y_coords - self.y_range / 2.0) / (self.y_range / 2.0))
-        suitability *= latitude_score[np.newaxis, :]
+        # Use a power to make the equatorial preference stronger and apply via broadcasting
+        suitability *= latitude_score[np.newaxis, :]**2
 
         # 3. Create a final mask of habitable land to apply subsequent, more complex modifiers.
         habitable_mask = suitability > 0
@@ -537,11 +540,11 @@ class FractalWorldGenerator:
         # Apply Water Proximity Modifier only to habitable areas
         if np.any(habitable_mask):
             distance_to_water = self._calculate_distance_to_water(self.land_mask)
+            # Create a combined mask of land that is both habitable and has a valid distance to water
             water_bonus_mask = habitable_mask & np.isfinite(distance_to_water)
             suitability[water_bonus_mask] += 0.8 / ((distance_to_water[water_bonus_mask]**0.5) + 1e-6)
 
-        # Apply Altitude and Slope Modifiers only to habitable areas
-        # Re-filter the habitable mask in case water bonus made some areas negative
+        # Apply Altitude and Slope Modifiers only to the remaining habitable areas
         habitable_mask = suitability > 0
         
         land_altitudes = self.world_map[habitable_mask]
@@ -560,18 +563,17 @@ class FractalWorldGenerator:
             suitability[habitable_mask] -= normalized_slope[habitable_mask] * 1.5
 
         # Apply Noise Modifier
-        habitable_mask = suitability > 0
+        habitable_mask = suitability > 0 # Final check on habitability
         settlement_noise_map = self._numba_generate_noise_map(
             self.x_range, self.y_range, self.settlement_perm, self.settlement_grad3,
             scale=20.0, octaves=4, persistence=0.5, lacunarity=2.0
         )
         suitability[habitable_mask] += ((settlement_noise_map[habitable_mask] + 1.0) / 2.0) * 0.2
         
-        # --- MODIFICATION END ---
-
+        # Final cleanup
         suitability[suitability < 0] = 0
 
-        # Find the best settlement locations from the final suitability map.
+        # 4. Find the best settlement locations from the final suitability map.
         flat_suitability = suitability.flatten()
         
         possible_indices = np.where(flat_suitability > 0)[0]
