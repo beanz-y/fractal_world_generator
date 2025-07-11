@@ -2,6 +2,30 @@ import tkinter as tk
 from tkinter import ttk, filedialog, colorchooser
 import random
 import math
+import json
+
+def generate_fantasy_name(name_fragments, used_names, max_retries=10):
+    """Generates a unique fantasy name using various patterns."""
+    for _ in range(max_retries):
+        pattern = random.random()
+        name = ""
+        if pattern < 0.1 and 'single' in name_fragments and name_fragments['single']:
+            name = random.choice(name_fragments['single'])
+        elif pattern < 0.3:
+            name = f"{random.choice(name_fragments['prefixes'])}{random.choice(name_fragments['suffixes'])}"
+        elif pattern < 0.6:
+            name = f"{random.choice(name_fragments['prefixes'])}{random.choice(name_fragments.get('vowels', ['a']))}{random.choice(name_fragments['suffixes'])}"
+        else:
+            name = f"{random.choice(name_fragments['prefixes'])}{random.choice(name_fragments['suffixes'])}"
+
+        name = name.replace('--', '-').replace('\'\'', '\'').strip('-')
+        
+        if name not in used_names:
+            used_names.add(name)
+            return name.capitalize()
+
+    # Failsafe if a unique name isn't found
+    return f"{random.choice(name_fragments['prefixes'])}{random.choice(name_fragments['suffixes'])}".capitalize()
 
 class SimplexNoise:
     """

@@ -657,30 +657,17 @@ class FractalWorldGenerator:
         
         features = {'peaks': [], 'ranges': [], 'areas': []}
         
-        # --- MODIFICATION START: Dynamic Minimum Feature Size ---
         total_land_pixels = np.sum(self.land_mask)
         if total_land_pixels == 0:
-            # If there's no land, we can't name land features.
-            # We can still name the ocean if that's all there is.
-            water_bodies = self._find_features(~self.land_mask, min_size=1)
-            if water_bodies:
-                ocean_name = f"The {self._generate_fantasy_name(name_fragments)} Ocean"
-                water_bodies[0]['name'] = ocean_name
-                features['areas'].append(water_bodies[0])
-            return features
-        
-        # Calculate min_area_size based on a percentage of the LAND area,
-        # ensuring it doesn't get too small on tiny islands.
-        min_land_feature_size = max(50, int(total_land_pixels * 0.01))
-        # --- MODIFICATION END ---
+            return features # No land, no features to name
 
+        min_land_feature_size = max(50, int(total_land_pixels * 0.01))
 
         # --- Step 1: Find all potential features of all types ---
         
         all_candidates = []
 
         # Find water bodies
-        # Water bodies are still compared to the total map size, as they can be vast.
         min_water_size = int(self.x_range * self.y_range * 0.002)
         water_bodies = self._find_features(~self.land_mask, min_size=1)
         if water_bodies:
@@ -696,13 +683,39 @@ class FractalWorldGenerator:
                 else:
                     all_candidates.append({'feature': body, 'type': 'sea'})
         
-        # Find mountain ranges using the new dynamic land feature size
+        # --- MODIFICATION START: Find all mountain ranges AND their peaks ---
         min_mountain_height = np.percentile(self.world_map[self.land_mask], 90)
         mountain_mask = (self.world_map >= min_mountain_height) & self.land_mask
-        for feature in self._find_features(mountain_mask, min_size=min_land_feature_size):
-            all_candidates.append({'feature': feature, 'type': 'range'})
+        labeled_mountains, num_mountain_features = label(mountain_mask)
+        
+        if num_mountain_features > 0:
+            slices = find_objects(labeled_mountains)
+            for i, (slice_x, slice_y) in enumerate(slices):
+                feature_label = i + 1
+                feature_mask = labeled_mountains[slice_x, slice_y] == feature_label
+                size = np.sum(feature_mask)
 
-        # Find major biome areas using the new dynamic land feature size
+                if size >= min_land_feature_size:
+                    # Add the mountain range itself as a candidate to be named
+                    coords = np.argwhere(feature_mask)
+                    mean_x, mean_y = np.mean(coords, axis=0)
+                    center_x = int(mean_x + slice_x.start)
+                    center_y = int(mean_y + slice_y.start)
+                    all_candidates.append({'feature': {'size': size, 'center': (center_x, center_y)}, 'type': 'range'})
+                    
+                    # Now, find the highest peak within this specific range
+                    # Get absolute coordinates for all pixels in this range
+                    abs_coords = coords + np.array([slice_x.start, slice_y.start])
+                    # Get the heights of those pixels
+                    range_heights = self.world_map[abs_coords[:, 0], abs_coords[:, 1]]
+                    # Find the highest one
+                    peak_abs_x, peak_abs_y = abs_coords[np.argmax(range_heights)]
+                    peak_height = np.max(range_heights)
+                    # Add the peak as a candidate, using its height as its "size" for sorting
+                    all_candidates.append({'feature': {'size': peak_height, 'x': peak_abs_x, 'y': peak_abs_y}, 'type': 'peak'})
+        # --- MODIFICATION END ---
+
+        # Find major biome areas
         biome_types_to_find = { 'desert': 'desert', 'tropical_rainforest': 'jungle', 
                                 'temperate_forest': 'forest', 'tundra': 'wastes'}
         for biome_key, f_type in biome_types_to_find.items():
@@ -711,7 +724,7 @@ class FractalWorldGenerator:
             for feature in self._find_features(mask, min_size=min_land_feature_size):
                  all_candidates.append({'feature': feature, 'type': f_type})
 
-        # --- Step 2: Sort all candidates by size and name them ---
+        # --- Step 2: Sort all candidates by size/significance and name them ---
 
         all_candidates.sort(key=lambda x: x['feature']['size'], reverse=True)
 
@@ -723,14 +736,19 @@ class FractalWorldGenerator:
         for cand in all_candidates:
             if named_features_count >= num_features_to_find: break
             
-            center = tuple(cand['feature']['center'])
             f_type = cand['type']
+            # Use a different way to check distance for point-based features like peaks
+            if f_type == 'peak':
+                center = (cand['feature']['x'], cand['feature']['y'])
+            else:
+                center = tuple(cand['feature']['center'])
             
             is_new_type = f_type not in named_types
             is_far_enough = not named_centers or min(np.sum((np.array(center) - np.array(c))**2) for c in named_centers) > min_dist_sq
 
             if is_new_type or is_far_enough:
                 name = ""
+                # Assign name based on type
                 if f_type == 'ocean': name = f"The {self._generate_fantasy_name(name_fragments)} Ocean"
                 elif f_type == 'sea': name = f"The {self._generate_fantasy_name(name_fragments)} Sea"
                 elif f_type == 'lake': name = f"Lake {self._generate_fantasy_name(name_fragments)}"
@@ -739,25 +757,21 @@ class FractalWorldGenerator:
                 elif f_type == 'jungle': name = f"The {self._generate_fantasy_name(name_fragments)} Jungle"
                 elif f_type == 'forest': name = f"The {self._generate_fantasy_name(name_fragments)} Forest"
                 elif f_type == 'wastes': name = f"The {self._generate_fantasy_name(name_fragments)} Wastes"
+                elif f_type == 'peak': name = f"Mount {self._generate_fantasy_name(name_fragments)}"
 
+                # Add the named feature to the final dictionary
                 final_feature = cand['feature']
                 final_feature['name'] = name
                 final_feature['type'] = f_type
 
                 if f_type == 'range':
                     features['ranges'].append(final_feature)
-                    labeled_mountains, _ = label(mountain_mask)
-                    center_x, center_y = final_feature['center']
-                    label_at_center = labeled_mountains[center_x, center_y]
-                    if label_at_center > 0:
-                        range_coords = np.argwhere(labeled_mountains == label_at_center)
-                        range_heights = self.world_map[range_coords[:, 0], range_coords[:, 1]]
-                        peak_x, peak_y = range_coords[np.argmax(range_heights)]
-                        peak_name = f"Mount {self._generate_fantasy_name(name_fragments)}"
-                        features['peaks'].append({'x': peak_x, 'y': peak_y, 'name': peak_name, 'type': 'peak'})
-                else:
+                elif f_type == 'peak':
+                    features['peaks'].append(final_feature)
+                else: # All other area-based features
                     features['areas'].append(final_feature)
                 
+                # Update tracking lists
                 named_features_count += 1
                 named_types.add(f_type)
                 named_centers.append(center)

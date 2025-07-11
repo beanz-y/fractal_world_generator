@@ -20,8 +20,8 @@ if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
 from world_generator import FractalWorldGenerator
-from utils import MapTooltip, PaletteEditor
-from constants import PREDEFINED_PALETTES, BIOME_DEFINITIONS
+from utils import MapTooltip, PaletteEditor, generate_fantasy_name
+from constants import PREDEFINED_PALETTES, BIOME_DEFINITIONS, THEME_NAME_FRAGMENTS
 from projection import render_globe, canvas_coords_to_map, map_coords_to_canvas
 
 # Add this line to disable the Decompression Bomb warning for very large images
@@ -38,13 +38,11 @@ class App(tk.Tk):
         self.zoom = 1.0
         self.view_offset = [0, 0]
         self.pan_start_pos = None
-        self.world_circumference_km = 1600.0 # Default value
+        self.world_circumference_km = 1600.0
         
-        # --- Layer Management System ---
         self.layers = {
-            'settlements': [],
-            'placemarks': [],
-            'natural_features': {'peaks': [], 'ranges': [], 'areas': [], 'bays': []}
+            'settlements': [], 'placemarks': [],
+            'natural_features': {'peaks': [], 'ranges': [], 'areas': []}
         }
         self.layer_visibility = {
             'Settlements': tk.BooleanVar(value=True),
@@ -52,8 +50,15 @@ class App(tk.Tk):
             'Features': tk.BooleanVar(value=True)
         }
         
-        self.placing_feature_info = None # Will store {'name': str, 'type': str}
+        self.placing_feature_info = None
+        self.perspective_viewer_instance = None
         
+        # --- NEW: Edit Mode State Variables ---
+        self.edit_mode = tk.BooleanVar(value=False)
+        self.selected_item = None
+        self.is_dragging = False
+        self.drag_start_pos = None
+
         self.simulation_frames = []
         self.current_frame_index = -1
 
@@ -67,8 +72,6 @@ class App(tk.Tk):
         self.canvas.pack(fill=tk.BOTH, expand=True)
         
         self.palette = list(PREDEFINED_PALETTES["Biome"])
-
-        self.perspective_viewer_instance = None
         
         self.params = {
             'width': tk.IntVar(value=640), 'height': tk.IntVar(value=320),
@@ -92,14 +95,13 @@ class App(tk.Tk):
             'simulation_frames': tk.IntVar(value=20),
             'theme': tk.StringVar(value='High Fantasy'), 
             'num_settlements': tk.IntVar(value=50),
-            'num_features': tk.IntVar(value=10) # New parameter for POIs
+            'num_features': tk.IntVar(value=10)
         }
         self._create_control_widgets()
         self.tooltip = MapTooltip(self)
         self.canvas.bind("<Configure>", self.redraw_canvas)
         self.canvas.bind("<MouseWheel>", self._on_zoom)
         self.canvas.bind("<Button-1>", self._on_canvas_press)
-        self.canvas.bind("<Button-3>", self._on_right_click) # Right-click to edit
         self.canvas.bind("<ButtonRelease-1>", self._on_pan_end)
         self.canvas.bind("<B1-Motion>", self._on_pan_move)
         self.canvas.bind("<Motion>", self._on_map_hover)
@@ -255,7 +257,6 @@ class App(tk.Tk):
         self.on_projection_change()
 
     def _create_layer_widgets(self):
-        """Creates the layer visibility and tools control widgets."""
         for widget in self.layers_frame.winfo_children():
             widget.destroy()
 
@@ -266,14 +267,124 @@ class App(tk.Tk):
         ttk.Checkbutton(self.layers_frame, text="Features", variable=self.layer_visibility['Features']).grid(row=1, column=0, sticky='w', padx=5)
         
         placemark_frame = ttk.Frame(self.layers_frame)
-        placemark_frame.grid(row=2, column=0, columnspan=2, sticky='ew')
+        placemark_frame.grid(row=2, column=0, columnspan=2, sticky='w')
         ttk.Checkbutton(placemark_frame, text="Placemarks", variable=self.layer_visibility['Placemarks']).pack(side=tk.LEFT, padx=5)
         ttk.Button(placemark_frame, text="Place Custom Feature...", command=self.open_placemark_dialog).pack(side=tk.LEFT, padx=5)
         
-        # --- NEW --- Add perspective view button here
         perspective_frame = ttk.Frame(self.layers_frame)
         perspective_frame.grid(row=3, column=0, columnspan=2, sticky='w', pady=(5,0))
         ttk.Button(perspective_frame, text="Set Perspective View...", command=self.set_perspective_view).pack(side=tk.LEFT, padx=5)
+
+        # --- NEW: Edit Mode Controls ---
+        edit_frame = ttk.Labelframe(self.layers_frame, text="Editor")
+        edit_frame.grid(row=4, column=0, columnspan=2, sticky='ew', pady=(10,0), padx=5)
+        
+        ttk.Checkbutton(edit_frame, text="Edit Mode", variable=self.edit_mode, command=self._toggle_edit_mode).pack(side=tk.LEFT, padx=5)
+        
+        # This frame will hold the buttons for the selected item
+        self.selection_info_frame = ttk.Frame(edit_frame)
+        self.selection_name_label = ttk.Label(self.selection_info_frame, text="", wraplength=150)
+        self.selection_rename_button = ttk.Button(self.selection_info_frame, text="Rename", command=self._rename_selected_item)
+        self.selection_delete_button = ttk.Button(self.selection_info_frame, text="Delete", command=self._delete_selected_item)
+
+    def _toggle_edit_mode(self):
+        if not self.edit_mode.get():
+            self._deselect_item()
+            self.canvas.config(cursor="")
+        else:
+            self.canvas.config(cursor="hand2")
+
+    def _update_selection_info_panel(self):
+        if self.selected_item:
+            self.selection_info_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
+            self.selection_name_label.config(text=self.selected_item['name'])
+            self.selection_name_label.pack(side=tk.LEFT)
+            self.selection_rename_button.pack(side=tk.LEFT, padx=2)
+            self.selection_delete_button.pack(side=tk.LEFT, padx=2)
+        else:
+            self.selection_info_frame.pack_forget()
+
+    def _rename_selected_item(self):
+        if not self.selected_item: return
+        new_name = simpledialog.askstring("Edit Name", "Enter new name:", initialvalue=self.selected_item['name'], parent=self)
+        if new_name:
+            self.selected_item['name'] = new_name
+            self._update_selection_info_panel()
+            self.redraw_canvas()
+
+    def _delete_selected_item(self):
+        if not self.selected_item: return
+        
+        # Function to find and remove item from a list
+        def remove_from_list(item_list, item_to_remove):
+            try:
+                item_list.remove(item_to_remove)
+                return True
+            except ValueError:
+                return False
+
+        item_type = self.selected_item.get('type')
+        found_and_removed = False
+        if item_type == 'settlement':
+            found_and_removed = remove_from_list(self.layers['settlements'], self.selected_item)
+        elif item_type == 'placemark':
+            found_and_removed = remove_from_list(self.layers['placemarks'], self.selected_item)
+        else: # Natural features
+            for key in ['peaks', 'areas', 'ranges']:
+                if key in self.layers['natural_features']:
+                    if remove_from_list(self.layers['natural_features'][key], self.selected_item):
+                        found_and_removed = True
+                        break
+        
+        if found_and_removed:
+            self._deselect_item()
+            self.redraw_canvas()
+
+    def _select_item(self, item):
+        self.selected_item = item
+        self._update_selection_info_panel()
+        self.redraw_canvas()
+
+    def _deselect_item(self):
+        self.selected_item = None
+        self._update_selection_info_panel()
+        self.redraw_canvas()
+
+    def _find_closest_item_to_click(self, event):
+        if not self.generator: return None
+        canvas_x, canvas_y = event.x, event.y
+        
+        all_items = []
+        # Gather all placeable items into one list, adding a reference to their original list
+        for item in self.layers.get('settlements', []): all_items.append(item)
+        for item in self.layers.get('placemarks', []): all_items.append(item)
+        if self.layers.get('natural_features'):
+            for key in ['peaks', 'areas', 'ranges']:
+                for item in self.layers['natural_features'].get(key, []):
+                    all_items.append(item)
+        
+        if not all_items: return None
+
+        min_dist_sq = float('inf')
+        closest_item = None
+        
+        for item in all_items:
+            # Handle both point-based and area-based features
+            item_x = item.get('x') if 'x' in item else item.get('center', [0,0])[0]
+            item_y = item.get('y') if 'y' in item else item.get('center', [0,0])[1]
+
+            item_canvas_x, item_canvas_y = self.image_to_canvas_coords(item_x, item_y)
+            if item_canvas_x is not None:
+                dist_sq = (canvas_x - item_canvas_x)**2 + (canvas_y - item_canvas_y)**2
+                if dist_sq < min_dist_sq:
+                    min_dist_sq = dist_sq
+                    closest_item = item
+        
+        # Only return an item if the click was reasonably close
+        if closest_item and min_dist_sq < 20**2:
+            return closest_item
+        return None
+
 
     def _toggle_layer_visibility(self, layer_name):
         self.redraw_canvas()
@@ -336,10 +447,19 @@ class App(tk.Tk):
         self.redraw_canvas()
 
     def _on_canvas_press(self, event):
-        if self.placing_feature_info:
+        if self.edit_mode.get():
+            item = self._find_closest_item_to_click(event)
+            if item:
+                self._select_item(item)
+                self.is_dragging = True
+                self.drag_start_pos = (event.x, event.y)
+                self.canvas.config(cursor="fleur")
+            else:
+                self._deselect_item()
+        elif self.placing_feature_info:
             self._add_placemark_at_click(event)
         else:
-            self._on_pan_start(event)
+            self._on_pan_start(event) # Normal panning
     
     def _add_placemark_at_click(self, event):
         if not self.generator or not self.placing_feature_info: return
@@ -786,6 +906,19 @@ class App(tk.Tk):
                     self.canvas.create_oval(canvas_x - icon_radius, canvas_y - icon_radius, canvas_x + icon_radius, canvas_y + icon_radius, fill='red', outline='black', tags="overlay")
                     self._create_text_with_outline(canvas_x + icon_radius + 2, canvas_y, text=pm['name'], anchor='w', font=("Arial", 10), fill="white", tags="overlay")
 
+        # --- NEW: Draw highlight for selected item ---
+        if self.selected_item:
+            item_x = self.selected_item.get('x') if 'x' in self.selected_item else self.selected_item.get('center', [0,0])[0]
+            item_y = self.selected_item.get('y') if 'y' in self.selected_item else self.selected_item.get('center', [0,0])[1]
+            
+            canvas_x, canvas_y = self.image_to_canvas_coords(item_x, item_y)
+            if canvas_x is not None:
+                radius = 15 # Highlight radius
+                self.canvas.create_oval(
+                    canvas_x - radius, canvas_y - radius, canvas_x + radius, canvas_y + radius,
+                    outline="yellow", width=3, tags="overlay"
+                )
+
     def image_to_canvas_coords(self, img_x, img_y):
         """Converts full map image coordinates to on-screen canvas coordinates for the current projection."""
         if not hasattr(self, 'generator') or not self.generator.pil_image: return None, None
@@ -868,32 +1001,60 @@ class App(tk.Tk):
 
     def _on_pan_end(self, event):
         self.pan_start_pos = None
-        if not self.placing_feature_info:
+        self.is_dragging = False
+        self.drag_start_pos = None
+        if self.edit_mode.get():
+            self.canvas.config(cursor="hand2")
+        else:
             self.canvas.config(cursor="")
 
     def _on_pan_move(self, event):
-        if self.pan_start_pos is None or self.placing_feature_info: return
-        
-        dx, dy = event.x - self.pan_start_pos[0], event.y - self.pan_start_pos[1]
-        
-        if self.params['projection'].get() == 'Orthographic':
-            self.params['rotation_y'].set(self.params['rotation_y'].get() - dx * 0.3)
-            self.params['rotation_x'].set(max(-90, min(90, self.params['rotation_x'].get() - dy * 0.3)))
-        else:
+        if self.edit_mode.get() and self.is_dragging and self.selected_item:
+            # Dragging an item in Edit Mode
+            if not self.drag_start_pos: return
+            
+            dx = event.x - self.drag_start_pos[0]
+            dy = event.y - self.drag_start_pos[1]
+            
+            # Convert canvas delta to image delta
             img_w, img_h = self.generator.pil_image.size
             canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
-
+            
             px_per_canvas_x = (img_w / self.zoom) / canvas_w
             px_per_canvas_y = (img_h / self.zoom) / canvas_h
             
             delta_img_x = dx * px_per_canvas_x
             delta_img_y = dy * px_per_canvas_y
             
-            self.view_offset[0] -= delta_img_x
-            self.view_offset[1] -= delta_img_y
-        
-        self.pan_start_pos = (event.x, event.y)
-        self.redraw_canvas()
+            # Update the item's position
+            if 'x' in self.selected_item: # Point-based
+                self.selected_item['x'] = (self.selected_item['x'] + delta_img_x) % img_w
+                self.selected_item['y'] += delta_img_y
+            elif 'center' in self.selected_item: # Area-based
+                center_x, center_y = self.selected_item['center']
+                new_x = (center_x + delta_img_x) % img_w
+                new_y = center_y + delta_img_y
+                self.selected_item['center'] = (new_x, new_y)
+
+            self.drag_start_pos = (event.x, event.y)
+            self.redraw_canvas()
+
+        elif not self.edit_mode.get() and self.pan_start_pos:
+            # Normal Panning
+            # ... (original pan logic)
+            dx, dy = event.x - self.pan_start_pos[0], event.y - self.pan_start_pos[1]
+            if self.params['projection'].get() == 'Orthographic':
+                self.params['rotation_y'].set(self.params['rotation_y'].get() - dx * 0.3)
+                self.params['rotation_x'].set(max(-90, min(90, self.params['rotation_x'].get() - dy * 0.3)))
+            else:
+                img_w, img_h = self.generator.pil_image.size
+                canvas_w, canvas_h = self.canvas.winfo_width(), self.canvas.winfo_height()
+                px_per_canvas_x = (img_w / self.zoom) / canvas_w
+                px_per_canvas_y = (img_h / self.zoom) / canvas_h
+                self.view_offset[0] -= dx * px_per_canvas_x
+                self.view_offset[1] -= dy * px_per_canvas_y
+            self.pan_start_pos = (event.x, event.y)
+            self.redraw_canvas()
         
     def open_placemark_dialog(self):
         dialog = PlacemarkDialog(self)
@@ -903,14 +1064,117 @@ class App(tk.Tk):
             self.status_label.config(text=f"Click on the map to place a {self.placing_feature_info['type']}...")
 
     def save_image(self):
-        if not self.generator or not self.generator.pil_image: return
-        file_path = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG Image", "*.png"), ("All Files", "*.*")], title="Save Image As")
-        if not file_path: return
+        if not self.generator or not self.generator.pil_image:
+            tk.messagebox.showwarning("No Image", "Please generate a world before saving.")
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".png",
+            filetypes=[("PNG Image", "*.png"), ("All Files", "*.*")],
+            title="Save Image As"
+        )
+        if not file_path:
+            return
+
+        # --- Create a high-quality export image ---
+        export_image = None
         
-        # To save what's on screen, we need to regenerate the currently displayed image
-        current_image = self.canvas.postscript(colormode='color')
-        img = Image.open(io.BytesIO(current_image.encode('utf-8')))
-        img.save(file_path)
+        # Case 1: The current view is the 3D Globe
+        if self.params['projection'].get() == 'Orthographic':
+            # To get a high-quality export, we'll render the globe at a larger size
+            export_size = 1600 # e.g., 1600x1600 pixels
+            source_array = np.array(self.generator.pil_image.convert('RGB'))
+            rot_y, rot_x = self.params['rotation_y'].get(), self.params['rotation_x'].get()
+
+            # Render the base globe
+            new_img_array = render_globe(source_array, export_size, export_size, rot_y, rot_x, self.generator.x_range, self.generator.y_range)
+            export_image = Image.fromarray(new_img_array).convert('RGBA')
+            
+            # Draw all layers directly onto this new high-res image
+            self._draw_layers_on_image(export_image)
+
+        # Case 2: The current view is the 2D Map
+        else: # Equirectangular
+            img_w, img_h = self.generator.pil_image.size
+            view_w, view_h = img_w / self.zoom, img_h / self.zoom
+
+            # Recreate the stitched image that the user currently sees
+            x0 = self.view_offset[0]
+            y0 = max(0, min(self.view_offset[1], img_h - view_h))
+            x0_wrapped = x0 % img_w
+            
+            box1 = (x0_wrapped, y0, min(img_w, x0_wrapped + view_w), y0 + view_h)
+            crop1 = self.generator.pil_image.crop(box1)
+            
+            stitched_image = Image.new('RGB', (int(view_w), int(view_h)))
+            stitched_image.paste(crop1, (0, 0))
+            
+            if x0_wrapped + view_w > img_w:
+                remaining_w = (x0_wrapped + view_w) - img_w
+                box2 = (0, y0, remaining_w, y0 + view_h)
+                crop2 = self.generator.pil_image.crop(box2)
+                stitched_image.paste(crop2, (crop1.width, 0))
+            
+            # --- Draw layers onto the stitched image ---
+            export_image = stitched_image.convert('RGBA')
+            draw = ImageDraw.Draw(export_image, 'RGBA')
+
+            try:
+                font_l = ImageFont.truetype("arialbd.ttf", size=32)
+                font_m = ImageFont.truetype("arial.ttf", size=24)
+                font_s = ImageFont.truetype("arial.ttf", size=20)
+            except IOError:
+                font_l = ImageFont.load_default()
+                font_m = ImageFont.load_default()
+                font_s = ImageFont.load_default()
+
+            # Helper function to get scaled coordinates for the export image
+            def get_export_coords(img_x, img_y):
+                dx = img_x - self.view_offset[0]
+                if abs(dx) > img_w / 2: dx -= np.sign(dx) * img_w
+                dy = img_y - self.view_offset[1]
+                
+                export_x = (dx / view_w) * export_image.width
+                export_y = (dy / view_h) * export_image.height
+                
+                if 0 <= export_x <= export_image.width and 0 <= export_y <= export_image.height:
+                    return export_x, export_y
+                return None, None
+
+            # Draw all features, settlements, and placemarks onto the export_image
+            # This logic mirrors the canvas drawing but uses ImageDraw
+            if self.layer_visibility['Features'].get():
+                for area in self.layers['natural_features'].get('areas', []):
+                    ex, ey = get_export_coords(*area['center'])
+                    if ex is not None: draw.text((ex, ey), area['name'], font=font_l, fill="#DDEEFF", anchor="mm", stroke_width=2, stroke_fill="black")
+                for r in self.layers['natural_features'].get('ranges', []):
+                    ex, ey = get_export_coords(*r['center'])
+                    if ex is not None: draw.text((ex, ey), r['name'], font=font_l, fill="#D2B48C", anchor="mm", stroke_width=2, stroke_fill="black")
+                for peak in self.layers['natural_features'].get('peaks', []):
+                    ex, ey = get_export_coords(peak['x'], peak['y'])
+                    if ex is not None: draw.text((ex, ey), f"▲ {peak['name']}", font=font_m, fill="white", anchor="ms", stroke_width=2, stroke_fill="black")
+            
+            if self.layer_visibility['Settlements'].get():
+                for s in self.layers['settlements']:
+                    ex, ey = get_export_coords(s['x'], s['y'])
+                    if ex is not None:
+                        draw.ellipse((ex-5, ey-5, ex+5, ey+5), fill='white', outline='black', width=2)
+                        draw.text((ex+8, ey), s['name'], font=font_s, fill="white", anchor="lm", stroke_width=2, stroke_fill="black")
+
+            if self.layer_visibility['Placemarks'].get():
+                for pm in self.layers['placemarks']:
+                    ex, ey = get_export_coords(pm['x'], pm['y'])
+                    if ex is not None:
+                        draw.ellipse((ex-6, ey-6, ex+6, ey+6), fill='red', outline='black', width=2)
+                        draw.text((ex+9, ey), pm['name'], font=font_m, fill="white", anchor="lm", stroke_width=2, stroke_fill="black")
+
+        # Finally, save the composed image
+        if export_image:
+            try:
+                export_image.save(file_path)
+                tk.messagebox.showinfo("Success", f"Image saved successfully to:\n{file_path}")
+            except Exception as e:
+                tk.messagebox.showerror("Save Error", f"Failed to save image:\n{e}")
 
     def save_preset(self):
         params_to_save = {key: var.get() for key, var in self.params.items()}
@@ -1417,14 +1681,22 @@ class PerspectiveViewer(tk.Toplevel):
 class PlacemarkDialog(simpledialog.Dialog):
     def body(self, master):
         self.title("Place Custom Feature")
+        self.parent = self.master # The App instance
         
         self.name_var = tk.StringVar()
         self.type_var = tk.StringVar(value="Placemark")
 
-        ttk.Label(master, text="Feature Name:").grid(row=0, column=0, sticky='w', padx=5, pady=2)
-        self.name_entry = ttk.Entry(master, textvariable=self.name_var)
-        self.name_entry.grid(row=0, column=1, sticky='ew', padx=5, pady=2)
+        # --- Name Entry ---
+        name_frame = ttk.Frame(master)
+        name_frame.grid(row=0, column=0, columnspan=2, sticky='ew', padx=5, pady=2)
+        ttk.Label(name_frame, text="Feature Name:").pack(side=tk.LEFT)
+        self.name_entry = ttk.Entry(name_frame, textvariable=self.name_var)
+        self.name_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # Add a randomize button for the name
+        random_button = ttk.Button(name_frame, text="🎲", width=3, command=self.generate_and_set_name)
+        random_button.pack(side=tk.LEFT, padx=(5,0))
         
+        # --- Type Selector ---
         ttk.Label(master, text="Feature Type:").grid(row=1, column=0, sticky='w', padx=5, pady=2)
         
         feature_types = [
@@ -1432,12 +1704,45 @@ class PlacemarkDialog(simpledialog.Dialog):
             "Ocean/Sea", "Mountain Range", "Forest Area", "Desert Area", "Jungle Area", "Tundra Area"
         ]
         self.type_combo = ttk.Combobox(master, textvariable=self.type_var, 
-                                       values=feature_types,
-                                       state="readonly")
+                                       values=feature_types, state="readonly")
         self.type_combo.grid(row=1, column=1, sticky='ew', padx=5, pady=2)
+        # Bind an event to generate a new name when the type changes
+        self.type_combo.bind("<<ComboboxSelected>>", self.generate_and_set_name)
         
         self.result = None
+        
+        # Generate the initial name
+        self.generate_and_set_name()
+        
         return self.name_entry # initial focus
+
+    def generate_and_set_name(self, event=None):
+        """Generates a name based on the selected type and current theme."""
+        theme = self.parent.params['theme'].get()
+        name_fragments = THEME_NAME_FRAGMENTS.get(theme, THEME_NAME_FRAGMENTS['High Fantasy'])
+        feature_type = self.type_var.get()
+        
+        # We need a set of used names to avoid duplicates, for now we can use a temporary one
+        # A more robust solution might pass the main app's used_names set
+        temp_used_names = set() 
+        
+        name = "New Feature"
+        if feature_type == "Settlement":
+            name = generate_fantasy_name(name_fragments, temp_used_names)
+        elif feature_type == "Mountain Peak":
+            name = f"Mount {generate_fantasy_name(name_fragments, temp_used_names)}"
+        elif feature_type == "Mountain Range":
+            name = f"The {generate_fantasy_name(name_fragments, temp_used_names)} Mountains"
+        elif feature_type == "Bay":
+            name = f"{generate_fantasy_name(name_fragments, temp_used_names)} Bay"
+        elif feature_type == "Ocean/Sea":
+            name = f"The {generate_fantasy_name(name_fragments, temp_used_names)} Sea"
+        elif feature_type == "Forest Area":
+            name = f"The {generate_fantasy_name(name_fragments, temp_used_names)} Forest"
+        else: # Generic placemark or other area
+            name = generate_fantasy_name(name_fragments, temp_used_names)
+            
+        self.name_var.set(name)
 
     def apply(self):
         name = self.name_var.get()
