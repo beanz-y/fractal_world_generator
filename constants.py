@@ -1,18 +1,46 @@
-# beanz-y/fractal_world_generator/fractal_world_generator-1b06ea9b9ce13dc52af7794e24cc0c807dd45816/constants.py
-BIOME_DEFINITIONS = {
-    'glacier':              {'idx': 52, 'shades': 4, 'temp_range': (0.0, 0.125), 'moist_range': (0.0, 1.0)},
-    'alpine_glacier':       {'idx': 56, 'shades': 4, 'temp_range': (0.0, 0.15), 'moist_range': (0.0, 1.0)}, # New biome
-    'tundra':               {'idx': 48, 'shades': 4, 'temp_range': (0.125, 0.25), 'moist_range': (0.0, 1.0)},
-    'taiga':                {'idx': 40, 'shades': 8, 'temp_range': (0.25, 0.5), 'moist_range': (0.0, 0.33)},
-    'shrubland':            {'idx': 24, 'shades': 4, 'temp_range': (0.25, 0.5), 'moist_range': (0.33, 0.66)},
-    'temperate_forest':     {'idx': 32, 'shades': 8, 'temp_range': (0.25, 0.5), 'moist_range': (0.66, 1.0)},
-    'desert':               {'idx': 16, 'shades': 8, 'temp_range': (0.5, 1.0), 'moist_range': (0.0, 0.16)},
-    'savanna':              {'idx': 25, 'shades': 4, 'temp_range': (0.5, 1.0), 'moist_range': (0.16, 0.33)},
-    'tropical_forest':      {'idx': 33, 'shades': 4, 'temp_range': (0.5, 0.75), 'moist_range': (0.33, 0.66)},
-    'temperate_rainforest': {'idx': 34, 'shades': 4, 'temp_range': (0.5, 0.75), 'moist_range': (0.66, 1.0)},
-    'tropical_rainforest':  {'idx': 35, 'shades': 4, 'temp_range': (0.75, 1.0), 'moist_range': (0.33, 1.0)},
-}
+# beanz-y/fractal_world_generator/fractal_world_generator-28f75751b57dacf83432892d2293f1e3754a3ba6/constants.py
+#
+# --- CHANGELOG ---
+# 1. Configuration Management:
+#    - Removed hardcoded BIOME_DEFINITIONS and THEME_NAME_FRAGMENTS dictionaries.
+#    - Added a helper function to load data from external JSON files.
+#    - BIOME_DEFINITIONS are now loaded from 'biomes.json'.
+#    - THEME_NAME_FRAGMENTS are now loaded from 'themes.json'.
+#    - This allows for easier user customization without editing source code.
+# -----------------
 
+import json
+import os
+
+def _load_json_from_file(filename):
+    """
+    Helper function to load data from a JSON file located in the same
+    directory as this script. This makes the path relative and robust.
+    """
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        file_path = os.path.join(script_dir, filename)
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        # Provide a more helpful error message if the files are missing.
+        raise FileNotFoundError(
+            f"Error: The configuration file '{filename}' was not found. "
+            f"Please make sure '{filename}' is in the same directory as 'constants.py'."
+        )
+    except json.JSONDecodeError as e:
+        # Provide context for JSON errors.
+        raise json.JSONDecodeError(
+            f"Error decoding '{filename}': {e.msg}", e.doc, e.pos
+        )
+
+# Load the definitions from the external files at startup.
+BIOME_DEFINITIONS = _load_json_from_file('biomes.json')
+THEME_NAME_FRAGMENTS = _load_json_from_file('themes.json')
+
+
+# PREDEFINED_PALETTES remains here as it's fundamental to the rendering
+# logic and less likely to be customized by a casual user.
 PREDEFINED_PALETTES = {
     "Biome": [
         # Water (0-15)
@@ -45,55 +73,4 @@ PREDEFINED_PALETTES = {
         (200,200,200), (195,195,195), (190,190,190), (185,185,185), (180,180,180),
         (175,175,175)
     ],
-}
-
-THEME_NAME_FRAGMENTS = {
-    'High Fantasy': {
-        'prefixes': ['Aer', 'Amn', 'Ard', 'Ast', 'Bel', 'Bór', 'Cael', 'Cal', 'Cel', 'Cor', 'Cyr', 'Dal', 'Dor', 'Dún', 'Ed', 'El', 'Er', 'Est', 'Fael', 'Fen', 'Gal', 'Gîl', 'Gond', 'Har', 'Hel', 'Il', 'Is', 'Ith', 'Kor', 'Lael', 'Lin', 'Loth', 'Lûr', 'Mal', 'Min', 'Mor', 'Nan', 'Nar', 'Nen', 'Nor', 'Or', 'Pel', 'Quel', 'Ram', 'Rhûn', 'Riv', 'Ro', 'Sar', 'Sil', 'Sir', 'Tal', 'Tar', 'Taur', 'Thar', 'Tir', 'Um', 'Val'],
-        'suffixes': ['ad', 'aeg', 'ael', 'an', 'and', 'ant', 'ar', 'ard', 'as', 'ath', 'bor', 'dan', 'del', 'dir', 'dol', 'dor', 'dras', 'duin', 'dur', 'ech', 'ed', 'eg', 'eil', 'el', 'en', 'eor', 'er', 'es', 'falas', 'fast', 'find', 'fin', 'for', 'gal', 'gard', 'garth', 'gil', 'gond', 'gor', 'had', 'har', 'hîr', 'ia', 'il', 'in', 'ion', 'ir', 'is', 'ith', 'kar', 'lad', 'laer', 'lam', 'land', 'las', 'lin', 'lith', 'lond', 'lor', 'los', 'loth', 'mar', 'men', 'mir', 'mith', 'mon', 'mor', 'nan', 'nar', 'nath', 'ndor', 'nen', 'nil', 'nir', 'nor', 'orn', 'os', 'ost', 'ram', 'randir', 'ras', 'rath', 'rhim', 'rhûn', 'rien', 'ril', 'rim', 'rin', 'rion', 'ro', 'roch', 'rond', 'ros', 'roth', 'ruin', 'sal', 'sar', 'sil', 'sir', 'thal', 'thas', 'thel', 'thir', 'thôl', 'thor', 'thuin', 'til', 'tin', 'tir', 'uial', 'uil', 'ûn', 'ur', 'val', 'van', 'waith', 'wen', 'wing', 'yale'],
-        'vowels': ['a', 'e', 'i', 'o', 'u', 'ae', 'ei', 'ia', 'io', 'ua'],
-        'single': ['Arnor', 'Gondor', 'Mordor', 'Eriador', 'Rohan', 'Beleriand', 'Mithlond', 'Imladris', 'Lórien', 'Isengard', 'Dol Guldur', 'Moria', 'Angmar', 'Harad', 'Rhûn', 'Dale', 'Esgaroth'],
-        'types': ['Castle', 'Keep', 'Village', 'Town', 'City', 'Citadel', 'Hold', 'Fortress', 'Tower', 'Haven', 'Vale', 'Wood', 'March', 'Fief'],
-        'ocean_suffixes': ['Expanse', 'Ocean', 'Deep', 'Void', 'Reach', 'Sea'],
-        'mountain_suffixes': ['Spine', 'Teeth', 'Reach', 'Crown', 'Veins', 'Crags', 'Peaks', 'Hills', 'Mountains', 'Range'],
-        'bay_suffixes': ['Sorrow', 'Whispers', 'Kings', 'Fools', 'Merchants', 'Drowned', 'Lost', 'Last', 'Ice']
-    },
-    'Sci-Fi': {
-        'prefixes': ['Acheron', 'Aegis', 'Alpha', 'Andro', 'Antares', 'Apex', 'Arc', 'Astro', 'Aura', 'Azure', 'Beta', 'Bio', 'Ceres', 'Chrono', 'Cinder', 'Cognito', 'Com', 'Cryo', 'Cyber', 'Cygni', 'Delta', 'Dyna', 'Echo', 'Elysium', 'Eon', 'Epsilon', 'Exo', 'Flux', 'Forerunner', 'Galvan', 'Giga', 'Grav', 'Halcyon', 'Helios', 'Holo', 'Hyper', 'Infra', 'Inter', 'Iota', 'Juno', 'Kappa', 'Kelvin', 'Kepler', 'Kilo', 'Kodiak', 'Lambda', 'Lazarus', 'Luna', 'Mag', 'Mega', 'Meta', 'Micro', 'Myriad', 'Nano', 'Nebula', 'Neo', 'Nexus', 'Nova', 'Omni', 'Omega', 'Orion', 'Orphiuchus', 'Ortho', 'Pallas', 'Pan', 'Para', 'Penta', 'Phase', 'Pico', 'Plex', 'Poly', 'Praxis', 'Procyon', 'Proto', 'Proxy', 'Psy', 'Pylon', 'Quad', 'Quantum', 'Quasar', 'Relay', 'Rho', 'Scion', 'Sigma', 'Sol', 'Spectre', 'Star', 'Stel', 'Sub', 'Syn', 'Tau', 'Tech', 'Telsa', 'Tensor', 'Tera', 'Terra', 'Tetra', 'Thanatos', 'Thermo', 'Triton', 'Tycho', 'Ultra', 'Umbra', 'Uni', 'Vanguard', 'Vela', 'Vesta', 'Vex', 'Vita', 'Void', 'Volta', 'Vortex', 'War', 'Xeno', 'Xylo', 'Zenith', 'Zeta', 'Zion'],
-        'suffixes': ['-7', ' Prime', ' Station', ' IX', ' Colony', ' Base', ' One', ' Omega', ' Terminus', ' Hub', ' Complex', ' Citadel', ' Point', ' Major', ' Minor', ' Spire', ' Array', ' Core', ' Drift', ' Facility', ' Gate', ' Grid', ' Harbor', ' Installation', ' Lab', ' Locus', ' Main', ' Node', ' Outpost', ' Port', ' Post', ' Relay', ' Ring', ' Secundus', ' Sector', ' Spoke', ' Terminal', ' Tower', ' Works', ' Zone'],
-        'single': ['Aurelia', 'Elysia', 'Hadrian', 'Hyperion', 'Icarus', 'Janus', 'Kepler-186f', 'Magellan', 'Meridian', 'Olympus', 'Pandora', 'Prometheus', 'Solitude', 'Tantalus', 'Tartarus', 'Terminus', 'Vespera', 'Zion'],
-        'types': ['Outpost', 'Colony', 'Station', 'Base', 'Habitat', 'Complex', 'Dome', 'Platform', 'Rig', 'Spire', 'Settlement', 'City'],
-        'ocean_suffixes': ['Ocean', 'Sea', 'Expanse', 'Deep', 'Void', 'Basin'],
-        'mountain_suffixes': ['Range', 'Uplift', 'Plateau', 'Massif', 'Spine', 'Shield'],
-        'bay_suffixes': ['Landing', 'Sector', 'Zone', 'Port', 'Anchor', 'Approach', 'Gulf']
-    },
-    'Post-Apocalyptic': {
-        'prefixes': ['Ash', 'Barren', 'Black', 'Bleak', 'Blood', 'Bone', 'Broken', 'Burn', 'Corpse', 'Crack', 'Crimson', 'Cross', 'Dead', 'Dog', 'Dust', 'Dyer', 'Echo', 'Fade', 'Fall', 'Fort', 'Gallows', 'Ghost', 'Gloom', 'Grave', 'Grim', 'Grit', 'Hang', 'Husk', 'Iron', 'Kill', 'Last', 'Lone', 'Lost', 'Mad', 'Mire', 'Mist', 'Mud', 'Mute', 'New', 'No', 'Old', 'Pale', 'Quick', 'Quiet', 'Rag', 'Rat', 'Red', 'Rot', 'Ruin', 'Rust', 'Salt', 'Sand', 'Scab', 'Scrap', 'Shade', 'Shadow', 'Shatter', 'Shiv', 'Silent', 'Skull', 'Slick', 'Slit', 'Smoke', 'Sorrow', 'Spike', 'Still', 'Stone', 'Stray', 'Sunken', 'Tar', 'Thorn', 'Torn', 'Twist', 'Waste', 'Wreck'],
-        'suffixes': ['-Town', ' Heap', ' Hope', ' Haven', ' Rock', ' Reach', ' Scrap', ' Yard', ' Camp', ' Refuge', ' Point', ' Out', ' Pit', ' Fall', ' End', ' Grave', ' Post', ' Fort', ' Scrap', 'Shanty', 'Hole', 'Den', 'Run', 'Gorge', 'Rest', 'Stop', 'Cross', 'Drift', 'Gulch', 'Sprawl', 'Yard'],
-        'single': ['Salvation', 'Terminus', 'Last Hope', 'The Pitt', 'Junkyard', 'The Glow', 'Golgotha', 'Bartertown', 'Rapture', 'Bedlam', 'Elysium', 'Gomorrah', 'Bedrock'],
-        'types': ['Camp', 'Settlement', 'Refuge', 'Fort', 'Scrap-town', 'Holdout', 'Warren', 'Den', 'Oasis', 'Stronghold', 'Bunker'],
-        'ocean_suffixes': ['Sea', 'Wastes', 'Mire', 'Deep', 'Expanse', 'Blackness'],
-        'mountain_suffixes': ['Peaks', 'Sprawl', 'Heap', 'Ruin', 'Ridge', 'Spine', 'Scraps'],
-        'bay_suffixes': ['Graveyard', 'Wreckage', 'Grave', 'End', 'Choke', 'Grief', 'Boneyard']
-    },
-    'Feudal Japan': {
-        'prefixes': ['Aka', 'Asa', 'Ashi', 'Bessho', 'Chi', 'Date', 'Edo', 'Fuji', 'Gifu', 'Hagi', 'Hime', 'Hira', 'Iga', 'Ima', 'Inu', 'Kaga', 'Kai', 'Kawa', 'Kiyo', 'Kofu', 'Koga', 'Matsu', 'Mino', 'Mito', 'Naga', 'Oda', 'Sado', 'Saga', 'Sakai', 'Saru', 'Satsu', 'Sawa', 'Seki', 'Shima', 'Taka', 'Takeda', 'Tani', 'Toki', 'Ue', 'Yama', 'Yone', 'Zawa'],
-        'suffixes': ['-sawa', '-gawa', '-moto', '-yama', '-bayashi', '-shima', '-mura', '-sato', '-jo', '-ji', '-dani', '-oka', '-zaki', '-hashi', '-no-miya'],
-        'vowels': ['a', 'i', 'u', 'e', 'o'],
-        'single': ['Edo', 'Kyoto', 'Osaka', 'Nagoya', 'Kamakura', 'Nara', 'Heian-kyo', 'Kobe', 'Sakai', 'Hiraizumi'],
-        'types': ['Castle', 'Village', 'Town', 'Province', 'Temple', 'Shrine', 'Dojo', 'Post Town', 'Port', 'Clan Hold'],
-        'ocean_suffixes': ['-nada', ' Ocean', ' Sea'],
-        'mountain_suffixes': ['-yama', '-dake', '-san', ' Mountains', ' Range', ' Peaks'],
-        'bay_suffixes': ['-wan']
-    },
-    'Lovecraftian': {
-        'prefixes': ['Ark', 'Dun', 'Inns', 'Kings', 'Yugg', 'Rlyeh', 'Kadath', 'Leng', 'Sarn', 'Mna', 'Ulth', 'Celeph', 'Dylath', 'Yhan', 'Yith', 'Ktha', 'Ngran', 'Tsath', 'Yig'],
-        'suffixes': ['-mouth', '-wich', '-goth', '-oth', '-ath', '-ith', '-port', '-leth', '-og', 'oth', '-ug', '-ogua', '-thoon', '-leian'],
-        'vowels': ['a', 'e', 'i', 'o', 'u', 'y'],
-        'single': ['Arkham', 'Dunwich', 'Innsmouth', 'Kingsport', 'Ulthar', 'Celephais', 'Dylath-Leen', 'The Nameless City', 'Irem', "The Plateau of Leng", "R'lyeh"],
-        'types': ['Town', 'Village', 'City', 'Asylum', 'Sanitarium', 'Library', 'University', 'Seaport', 'Cult Stronghold', 'Ruin'],
-        'ocean_suffixes': ['Expanse', 'Void', 'Abyss', 'Sea of Madness', 'Cyclopean Deeps'],
-        'mountain_suffixes': ['Peaks of Thok', 'Mountains of Madness', 'Forbidden Range', 'Basalt Pillars', 'Sunken Spires'],
-        'bay_suffixes': ['Despair', 'Sunken', 'Madness', 'Whispers', 'Shadows', 'The Damned']
-    }
 }

@@ -1,3 +1,12 @@
+# beanz-y/fractal_world_generator/fractal_world_generator-28f75751b57dacf83432892d2293f1e3754a3ba6/utils.py
+#
+# --- CHANGELOG ---
+# 1. Consolidate Name Generation:
+#    - The `generate_fantasy_name` function is now the single source of truth for creating unique names.
+#    - It now requires the `used_names` set as a mandatory argument to ensure uniqueness across all calls.
+#    - The logic inside remains the same, but its role is now central to the application.
+# -----------------
+
 import tkinter as tk
 from tkinter import ttk, filedialog, colorchooser
 import random
@@ -5,27 +14,37 @@ import math
 import json
 
 def generate_fantasy_name(name_fragments, used_names, max_retries=10):
-    """Generates a unique fantasy name using various patterns."""
+    """
+    Generates a unique fantasy name using various patterns and adds it to the used_names set.
+    """
     for _ in range(max_retries):
         pattern = random.random()
         name = ""
+        # Ensure fragments exist before trying to access them
         if pattern < 0.1 and 'single' in name_fragments and name_fragments['single']:
             name = random.choice(name_fragments['single'])
-        elif pattern < 0.3:
+        elif pattern < 0.3 and 'prefixes' in name_fragments and 'suffixes' in name_fragments:
             name = f"{random.choice(name_fragments['prefixes'])}{random.choice(name_fragments['suffixes'])}"
-        elif pattern < 0.6:
+        elif pattern < 0.6 and 'prefixes' in name_fragments and 'suffixes' in name_fragments and 'vowels' in name_fragments:
             name = f"{random.choice(name_fragments['prefixes'])}{random.choice(name_fragments.get('vowels', ['a']))}{random.choice(name_fragments['suffixes'])}"
-        else:
+        elif 'prefixes' in name_fragments and 'suffixes' in name_fragments:
             name = f"{random.choice(name_fragments['prefixes'])}{random.choice(name_fragments['suffixes'])}"
+        else:
+            # Failsafe if the fragments are not properly defined
+            continue
 
         name = name.replace('--', '-').replace('\'\'', '\'').strip('-')
-        
-        if name not in used_names:
+
+        if name and name not in used_names:
             used_names.add(name)
             return name.capitalize()
 
-    # Failsafe if a unique name isn't found
-    return f"{random.choice(name_fragments['prefixes'])}{random.choice(name_fragments['suffixes'])}".capitalize()
+    # Failsafe if a unique name isn't found after several retries
+    # Generate a simple numbered name to guarantee uniqueness.
+    failsafe_name = f"Unnamed Land {len(used_names) + 1}"
+    used_names.add(failsafe_name)
+    return failsafe_name
+
 
 class SimplexNoise:
     """

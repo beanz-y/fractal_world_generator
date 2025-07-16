@@ -1,9 +1,18 @@
-# beanz-y/fractal_world_generator/fractal_world_generator-8b752999818ebdee7e3c696935b618f2a364ff8f/world_generator.py
+# beanz-y/fractal_world_generator/fractal_world_generator-28f75751b57dacf83432892d2293f1e3754a3ba6/world_generator.py
+#
+# --- CHANGELOG ---
+# 1. Consolidate Name Generation:
+#    - Imported `generate_fantasy_name` from `utils`.
+#    - Removed the internal `_generate_fantasy_name` method to eliminate redundant code.
+#    - Updated `generate_settlements` to use the imported `generate_fantasy_name`.
+#    - Updated `generate_natural_features` to use the imported `generate_fantasy_name`.
+# -----------------
+
 import numpy as np # type: ignore
 import random
 import math
 from PIL import Image # type: ignore
-from utils import SimplexNoise
+from utils import SimplexNoise, generate_fantasy_name # MODIFIED
 from constants import BIOME_DEFINITIONS, PREDEFINED_PALETTES, THEME_NAME_FRAGMENTS
 import numba # type: ignore
 from collections import deque
@@ -477,28 +486,7 @@ class FractalWorldGenerator:
         # to the nearest water pixel (False in the mask).
         return distance_transform_edt(land_mask)
 
-    def _generate_fantasy_name(self, name_fragments, max_retries=10):
-        """Generates a unique fantasy name using various patterns."""
-        for _ in range(max_retries):
-            pattern = random.random()
-            name = ""
-            if pattern < 0.1 and 'single' in name_fragments and name_fragments['single']:
-                name = random.choice(name_fragments['single'])
-            elif pattern < 0.3:
-                name = f"{random.choice(name_fragments['prefixes'])}{random.choice(name_fragments['suffixes'])}"
-            elif pattern < 0.6:
-                name = f"{random.choice(name_fragments['prefixes'])}{random.choice(name_fragments.get('vowels', ['a']))}{random.choice(name_fragments['suffixes'])}"
-            else:
-                name = f"{random.choice(name_fragments['prefixes'])}{random.choice(name_fragments['suffixes'])}"
-
-            name = name.replace('--', '-').replace('\'\'', '\'').strip('-')
-            
-            if name not in self.used_names:
-                self.used_names.add(name)
-                return name.capitalize()
-
-        # Failsafe if a unique name isn't found
-        return f"{random.choice(name_fragments['prefixes'])}{random.choice(name_fragments['suffixes'])}".capitalize()
+    # --- REMOVED: _generate_fantasy_name method is now in utils.py ---
 
     def generate_settlements(self):
         if self.world_map is None or self.land_mask is None: return
@@ -609,7 +597,8 @@ class FractalWorldGenerator:
                     is_far_enough = False; break
             
             if is_far_enough:
-                name = self._generate_fantasy_name(name_fragments)
+                # MODIFIED: Use the centralized name generation function
+                name = generate_fantasy_name(name_fragments, self.used_names)
                 stype = random.choice(name_fragments['types'])
                 self.settlements.append({'x': x, 'y': y, 'name': name, 'type': 'settlement', 'stype': stype})
 
@@ -750,16 +739,19 @@ class FractalWorldGenerator:
 
             if is_new_type or is_far_enough:
                 name = ""
+                # MODIFIED: Use the centralized name generation function for all names
+                base_name = generate_fantasy_name(name_fragments, self.used_names)
+                
                 # Assign name based on type
-                if f_type == 'ocean': name = f"The {self._generate_fantasy_name(name_fragments)} Ocean"
-                elif f_type == 'sea': name = f"The {self._generate_fantasy_name(name_fragments)} Sea"
-                elif f_type == 'lake': name = f"Lake {self._generate_fantasy_name(name_fragments)}"
-                elif f_type == 'range': name = f"The {self._generate_fantasy_name(name_fragments)} Mountains"
-                elif f_type == 'desert': name = f"The {self._generate_fantasy_name(name_fragments)} Desert"
-                elif f_type == 'jungle': name = f"The {self._generate_fantasy_name(name_fragments)} Jungle"
-                elif f_type == 'forest': name = f"The {self._generate_fantasy_name(name_fragments)} Forest"
-                elif f_type == 'wastes': name = f"The {self._generate_fantasy_name(name_fragments)} Wastes"
-                elif f_type == 'peak': name = f"Mount {self._generate_fantasy_name(name_fragments)}"
+                if f_type == 'ocean': name = f"The {base_name} Ocean"
+                elif f_type == 'sea': name = f"The {base_name} Sea"
+                elif f_type == 'lake': name = f"Lake {base_name}"
+                elif f_type == 'range': name = f"The {base_name} Mountains"
+                elif f_type == 'desert': name = f"The {base_name} Desert"
+                elif f_type == 'jungle': name = f"The {base_name} Jungle"
+                elif f_type == 'forest': name = f"The {base_name} Forest"
+                elif f_type == 'wastes': name = f"The {base_name} Wastes"
+                elif f_type == 'peak': name = f"Mount {base_name}"
 
                 # Add the named feature to the final dictionary
                 final_feature = cand['feature']
