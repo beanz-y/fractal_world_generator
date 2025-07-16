@@ -1,10 +1,11 @@
 # beanz-y/fractal_world_generator/fractal_world_generator-28f75751b57dacf83432892d2293f1e3754a3ba6/utils.py
 #
 # --- CHANGELOG ---
-# 1. Consolidate Name Generation:
-#    - The `generate_fantasy_name` function is now the single source of truth for creating unique names.
-#    - It now requires the `used_names` set as a mandatory argument to ensure uniqueness across all calls.
-#    - The logic inside remains the same, but its role is now central to the application.
+# 1. Feature: Improved Naming Variety
+#    - Reworked `generate_fantasy_name` and `generate_contextual_name` to produce more varied and less repetitive names.
+#    - Added a helper function `_check_ugly_join` to prevent awkward combinations (e.g., doubled vowels or consonants).
+#    - The name generation now uses more patterns, including the new "connectors" from themes.json.
+#    - The responsibility of ensuring uniqueness by adding a name to the `used_names` set is now handled inside these functions.
 # -----------------
 
 import tkinter as tk
@@ -13,44 +14,116 @@ import random
 import math
 import json
 
-def generate_fantasy_name(name_fragments, used_names, max_retries=10):
+def _check_ugly_join(part1, part2):
+    """A simple helper to prevent aesthetically unpleasing name combinations."""
+    if not part1 or not part2:
+        return False
+    vowels = "aeiou"
+    # Prevents joining two parts that are identical
+    if part1.lower() == part2.lower():
+        return True
+    # Prevents doubled consonants like 'll', 'rr', etc.
+    if part1[-1] == part2[0]:
+        return True
+    # Prevents creating long strings of vowels, e.g., 'Lae' + 'ael'
+    if part1[-1] in vowels and part2[0] in vowels:
+        if len(part1) > 1 and part1[-2] in vowels:
+            return True
+    return False
+
+def generate_fantasy_name(name_fragments, used_names, max_retries=20):
     """
     Generates a unique fantasy name using various patterns and adds it to the used_names set.
     """
     for _ in range(max_retries):
-        pattern = random.random()
         name = ""
-        # Ensure fragments exist before trying to access them
-        if pattern < 0.1 and 'single' in name_fragments and name_fragments['single']:
-            name = random.choice(name_fragments['single'])
-        elif pattern < 0.3 and 'prefixes' in name_fragments and 'suffixes' in name_fragments:
-            name = f"{random.choice(name_fragments['prefixes'])}{random.choice(name_fragments['suffixes'])}"
-        elif pattern < 0.6 and 'prefixes' in name_fragments and 'suffixes' in name_fragments and 'vowels' in name_fragments:
-            name = f"{random.choice(name_fragments['prefixes'])}{random.choice(name_fragments.get('vowels', ['a']))}{random.choice(name_fragments['suffixes'])}"
-        elif 'prefixes' in name_fragments and 'suffixes' in name_fragments:
-            name = f"{random.choice(name_fragments['prefixes'])}{random.choice(name_fragments['suffixes'])}"
+        pattern = random.random()
+        
+        prefix = random.choice(name_fragments.get('prefixes', ['X']))
+        suffix = random.choice(name_fragments.get('suffixes', ['Y']))
+
+        # Pattern 1: Simple Prefix + Suffix
+        if pattern < 0.4:
+            if not _check_ugly_join(prefix, suffix):
+                name = prefix + suffix
+        # Pattern 2: Prefix + Vowel + Suffix
+        elif pattern < 0.7 and 'vowels' in name_fragments:
+            vowel = random.choice(name_fragments['vowels'])
+            if not _check_ugly_join(prefix, vowel) and not _check_ugly_join(vowel, suffix):
+                name = prefix + vowel + suffix
+        # Pattern 3: Prefix + Connector + Suffix
+        elif pattern < 0.9 and 'connectors' in name_fragments and name_fragments['connectors']:
+            connector = random.choice(name_fragments['connectors'])
+            if not _check_ugly_join(prefix, connector) and not _check_ugly_join(connector, suffix):
+                name = prefix + connector + suffix
+        # Pattern 4: Single pre-made name or fallback to P+S
         else:
-            # Failsafe if the fragments are not properly defined
-            continue
-
-        name = name.replace('--', '-').replace('\'\'', '\'').strip('-')
-
-        if name and name not in used_names:
-            used_names.add(name)
-            return name.capitalize()
-
-    # Failsafe if a unique name isn't found after several retries
-    # Generate a simple numbered name to guarantee uniqueness.
+            if 'single' in name_fragments and name_fragments['single'] and random.random() < 0.25:
+                name = random.choice(name_fragments['single'])
+            else:
+                 if not _check_ugly_join(prefix, suffix):
+                    name = prefix + suffix
+        
+        capitalized_name = name.capitalize()
+        if name and capitalized_name not in used_names:
+            used_names.add(capitalized_name)
+            return capitalized_name
+    
+    # Failsafe if a unique name isn't found
     failsafe_name = f"Unnamed Land {len(used_names) + 1}"
     used_names.add(failsafe_name)
     return failsafe_name
 
+def generate_contextual_name(name_fragments, used_names, context=None):
+    """
+    Generates a name, potentially influenced by a nearby feature, and adds it to the used_names set.
+    """
+    if context and random.random() < 0.7: # 70% chance to use context
+        feature_name = context['name']
+        feature_type = context.get('type', 'area') # Use 'area' as a fallback type
+        
+        parts = feature_name.replace("The ", "").split(" ")
+        core_word = parts[0]
+
+        context_prefixes = {
+            'range': ['Stone', 'Iron', 'Cloud', 'High', 'Low', 'Ridge', 'Crag'],
+            'forest': ['Green', 'Whisper', 'Moss', 'Deep', 'Wild', 'Shadow'],
+            'desert': ['Sun', 'Sand', 'Ash', 'Dust', 'Glass', 'Dry'],
+            'ocean': ['Sea', 'Wave', 'Salt', 'Drift', 'Tide'],
+            'area': ['Mid', 'North', 'South', 'East', 'West'] # Fallback for generic areas
+        }
+        context_suffixes = {
+            'range': ['watch', 'reach', 'pass', 'hold', 'fall', 'garde', 'crag', 'mont'],
+            'forest': ['wood', 'dell', 'grove', 'shade', 'hollow', 'fen', 'field'],
+            'desert': ['wind', 'scour', 'dune', 'bluff', 'scar', 'gulch'],
+            'ocean': ['port', 'harbor', 'tide', 'crest', 'ford', 'side'],
+            'area': ['point', 'view', 'mark', 'end'] # Fallback for generic areas
+        }
+        
+        if feature_type in context_prefixes and feature_type in context_suffixes:
+            for _ in range(5):
+                pattern = random.random()
+                name = ""
+                if pattern < 0.5:
+                    if random.random() < 0.5:
+                        name = f"{core_word}{random.choice(context_suffixes[feature_type])}"
+                    else:
+                        name = f"{random.choice(context_prefixes[feature_type])}{core_word.lower()}"
+                else:
+                    name = f"{random.choice(context_prefixes[feature_type])}{random.choice(context_suffixes[feature_type])}"
+                
+                name = name.replace('--', '-').strip('-')
+                capitalized_name = name.capitalize()
+                if capitalized_name not in used_names:
+                    used_names.add(capitalized_name)
+                    return capitalized_name
+
+    # Fallback to the standard (and now improved) generator
+    return generate_fantasy_name(name_fragments, used_names)
+
 
 class SimplexNoise:
-    """
-    A pure Python implementation of simplex noise by Stefan Gustavson.
-    Adapted from various sources to be a self-contained class.
-    """
+    # ... (This class is unchanged)
     def __init__(self, seed=None):
         if seed is None:
             seed = random.randint(0, 2**32 - 1)
@@ -139,7 +212,9 @@ class SimplexNoise:
             frequency *= lacunarity
         return total / max_value
 
+
 class MapTooltip(tk.Toplevel):
+    # ... (This class is unchanged)
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.overrideredirect(True)
@@ -157,7 +232,9 @@ class MapTooltip(tk.Toplevel):
     def hide(self):
         self.withdraw()
 
+
 class PaletteEditor(tk.Toplevel):
+    # ... (This class is unchanged)
     def __init__(self, parent, apply_and_close_callback):
         super().__init__(parent)
         self.transient(parent)
