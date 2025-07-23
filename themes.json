@@ -1,0 +1,26 @@
+{
+    "High Fantasy": {
+        "prefixes": ["Aer", "Bal", "Cal", "Dae", "El", "Fen", "Gal", "Har", "Is", "Jor", "Kel", "Lor", "Mith", "Nor", "Oth", "Per", "Quil", "Ros", "Sil", "Tor", "Val"],
+        "suffixes": ["dor", "en", "ia", "land", "mar", "nia", "or", "sil", "thos", "vale", "wyn", "zir"],
+        "vowels": ["a", "e", "i", "o", "u"],
+        "connectors": ["'", "en", "in", "on"],
+        "single": ["Avalon", "Erebor", "Gondolin", "Narnia", "Rivendell"],
+        "types": ["City", "Town", "Village", "Fortress", "Hold"]
+    },
+    "Dark Fantasy": {
+        "prefixes": ["Morg", "Gloom", "Dread", "Cor", "Vex", "Nigh", "Mal", "Umbr", "Skar", "Grol"],
+        "suffixes": ["heim", "fang", "mire", "gard", "fell", "watch", "burg", "scar", "den"],
+        "vowels": ["a", "o", "u"],
+        "connectors": ["'"],
+        "single": ["Barovia", "Cthulhu", "Innsmouth", "Mordor", "Yharnam"],
+        "types": ["Citadel", "Asylum", "Dungeon", "Crypt", "Ruin"]
+    },
+    "Sci-Fi": {
+        "prefixes": ["Cyber", "Neo", "Xy", "Zor", "Alpha", "Beta", "Gamma", "Terra", "Nova", "Astro"],
+        "suffixes": ["-7", " Prime", " X", " Station", " Colony", " City", " Hub", " Nexus"],
+        "vowels": [],
+        "connectors": ["-"],
+        "single": ["Trantor", "Coruscant", "Cybertron", "Arrakis", "LV-426"],
+        "types": ["Station", "Colony", "Outpost", "Metropolis", "Sector"]
+    }
+}

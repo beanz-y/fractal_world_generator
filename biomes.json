@@ -1,0 +1,77 @@
+{
+    "ocean": {
+        "idx": 1,
+        "shades": 7,
+        "temp_range": [0.0, 1.0],
+        "moist_range": [0.0, 1.0]
+    },
+    "glacier": {
+        "idx": 52,
+        "shades": 4,
+        "temp_range": [0.0, 0.1],
+        "moist_range": [0.0, 1.0]
+    },
+    "alpine_glacier": {
+        "idx": 56,
+        "shades": 4,
+        "temp_range": [0.0, 0.3],
+        "moist_range": [0.0, 1.0]
+    },
+    "tundra": {
+        "idx": 48,
+        "shades": 4,
+        "temp_range": [0.1, 0.3],
+        "moist_range": [0.0, 0.5]
+    },
+    "taiga": {
+        "idx": 40,
+        "shades": 8,
+        "temp_range": [0.2, 0.4],
+        "moist_range": [0.3, 0.8]
+    },
+    "shrubland": {
+        "idx": 24,
+        "shades": 8,
+        "temp_range": [0.3, 0.6],
+        "moist_range": [0.1, 0.4]
+    },
+    "temperate_forest": {
+        "idx": 32,
+        "shades": 8,
+        "temp_range": [0.4, 0.7],
+        "moist_range": [0.4, 0.8]
+    },
+    "temperate_rainforest": {
+        "idx": 32,
+        "shades": 8,
+        "temp_range": [0.4, 0.7],
+        "moist_range": [0.8, 1.0]
+    },
+    "desert": {
+        "idx": 16,
+        "shades": 8,
+        "temp_range": [0.0, 1.0],
+        "moist_range": [0.0, 0.1]
+    },
+    "savanna": {
+        "idx": 24,
+        "shades": 8,
+        "temp_range": [0.6, 0.8],
+        "moist_range": [0.1, 0.5]
+    },
+    "tropical_forest": {
+        "idx": 32,
+        "shades": 8,
+        "temp_range": [0.7, 1.0],
+        "moist_range": [0.5, 0.8]
+    },
+    "tropical_rainforest": {
+        "idx": 32,
+        "shades": 8,
+        "temp_range": [0.7, 1.0],
+        "moist_range": [0.8, 1.0]
+    },
+    "river": {
+        "idx": 60
+    }
+}

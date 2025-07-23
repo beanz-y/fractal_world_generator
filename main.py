@@ -1,9 +1,17 @@
 # beanz-y/fractal_world_generator/fractal_world_generator-28f75751b57dacf83432892d2293f1e3754a3ba6/main.py
 #
 # --- CHANGELOG ---
-# 1. Bugfix: Corrected a ValueError in `_on_map_hover` by changing an ambiguous numpy check.
-# 2. Bugfix: Corrected the `anchor` arguments in `save_layered_image` to use the PIL format, fixing the export crash.
-# 3. Finalized the refactoring of UI components into separate files.
+# 1. Revert: Plate Tectonics model UI has been removed.
+# 2. Feature: UI for Climate and Rivers
+#    - Added a "Season" dropdown to the Climate tab to apply global temperature modifiers.
+#    - Added a "Number of Rivers" slider to the Lore tab.
+#    - Added a "Rivers" checkbox to the Layers & Tools panel to toggle their visibility.
+# 3. Refactor: Dynamic UI
+#    - The main `start_generation` function now passes all relevant parameters to the generator.
+# 4. Feature: UI for Lake Controls
+#    - Added a "Lake Coverage %" slider to the Lore tab to control the percentage of potential lakes that form.
+#    - Added a "Named Lakes" slider to the Lore tab to control the maximum number of lakes that receive names.
+# 5. Bugfix: Corrected tooltip logic to display specific names for named water bodies (lakes, oceans, seas).
 # -----------------
 
 import tkinter as tk
@@ -16,6 +24,7 @@ import threading
 import json
 import os
 import sys
+import time
 from queue import Queue
 
 # Add the script's directory to the Python path
@@ -26,7 +35,7 @@ if script_dir not in sys.path:
 # Import local modules
 from world_generator import FractalWorldGenerator
 from constants import PREDEFINED_PALETTES, BIOME_DEFINITIONS, THEME_NAME_FRAGMENTS
-from projection import render_globe, canvas_coords_to_map
+from projection import render_globe, canvas_coords_to_map, map_coords_to_canvas
 from ui_components import MapTooltip, PaletteEditor
 from dialogs import PlacemarkDialog
 from viewers import PerspectiveViewer
@@ -47,13 +56,14 @@ class App(tk.Tk):
         self.world_circumference_km = 1600.0
         
         self.layers = {
-            'settlements': [], 'placemarks': [],
+            'settlements': [], 'placemarks': [], 'rivers': [],
             'natural_features': {'peaks': [], 'ranges': [], 'areas': []}
         }
         self.layer_visibility = {
             'Settlements': tk.BooleanVar(value=True),
             'Placemarks': tk.BooleanVar(value=True),
-            'Features': tk.BooleanVar(value=True)
+            'Features': tk.BooleanVar(value=True),
+            'Rivers': tk.BooleanVar(value=True)
         }
         
         self.placing_feature_info = None
@@ -66,6 +76,7 @@ class App(tk.Tk):
 
         self.simulation_frames = []
         self.current_frame_index = -1
+        self.feature_name_lookup = {}
 
         self.main_frame = ttk.Frame(self, padding="10")
         self.main_frame.pack(fill=tk.BOTH, expand=True)
@@ -95,12 +106,16 @@ class App(tk.Tk):
             'ice': tk.DoubleVar(value=15.0),
             'altitude_temp_effect': tk.DoubleVar(value=0.5),
             'wind_direction': tk.StringVar(value='West to East'), 
+            'season': tk.StringVar(value='Normal'),
             'simulation_event': tk.StringVar(value='Ice Age Cycle'),
             'simulation_speed': tk.StringVar(value='Realistic (Ease In/Out)'),
             'simulation_frames': tk.IntVar(value=20),
             'theme': tk.StringVar(value='High Fantasy'), 
             'num_settlements': tk.IntVar(value=50),
-            'num_features': tk.IntVar(value=10)
+            'num_features': tk.IntVar(value=10),
+            'num_rivers': tk.IntVar(value=50),
+            'lake_coverage': tk.DoubleVar(value=50.0),
+            'max_lakes_to_name': tk.IntVar(value=20)
         }
         self._create_control_widgets()
         self.tooltip = MapTooltip(self)
@@ -127,6 +142,7 @@ class App(tk.Tk):
 
         notebook.add(gen_frame, text='Generation'); notebook.add(climate_frame, text='Climate'); notebook.add(civ_frame, text='Lore'); notebook.add(display_frame, text='Display'); notebook.add(sim_frame, text='Simulator')
 
+        # --- Generation Tab ---
         gen_frame.grid_columnconfigure(1, weight=1)
         g_row = 0
         self._create_entry_widget("Width:", self.params['width'], g_row, master=gen_frame); g_row += 1
@@ -141,6 +157,7 @@ class App(tk.Tk):
         self._create_slider_widget("Faults:", self.params['faults'], 1, 2000, g_row, master=gen_frame); g_row += 1
         self._create_slider_widget("Erosion:", self.params['erosion'], 0, 50, g_row, master=gen_frame); g_row += 1
 
+        # --- Climate Tab ---
         climate_frame.grid_columnconfigure(1, weight=1)
         c_row = 0
         self._create_entry_widget("Ice Seed:", self.params['ice_seed'], c_row, include_random_button=True, master=climate_frame); c_row += 1
@@ -152,6 +169,11 @@ class App(tk.Tk):
         wind_combo = ttk.Combobox(climate_frame, textvariable=self.params['wind_direction'], values=['West to East', 'East to West', 'North to South', 'South to North'], state="readonly")
         wind_combo.grid(row=c_row, column=0, columnspan=2, sticky='ew', padx=5, pady=(0,5)); c_row += 1
 
+        ttk.Label(climate_frame, text="Season:").grid(row=c_row, column=0, columnspan=2, sticky='w', padx=5); c_row += 1
+        season_combo = ttk.Combobox(climate_frame, textvariable=self.params['season'], values=['Normal', 'Warm', 'Cold', 'Ice Age'], state="readonly")
+        season_combo.grid(row=c_row, column=0, columnspan=2, sticky='ew', padx=5, pady=(0,5)); c_row += 1
+
+        # --- Lore/Civilization Tab ---
         civ_frame.grid_columnconfigure(1, weight=1)
         civ_row = 0
         ttk.Label(civ_frame, text="Theme:").grid(row=civ_row, column=0, columnspan=2, sticky='w', padx=5); civ_row += 1
@@ -159,7 +181,11 @@ class App(tk.Tk):
         theme_combo.grid(row=civ_row, column=0, columnspan=2, sticky='ew', padx=5, pady=(0,5)); civ_row += 1
         self._create_slider_widget("Settlements:", self.params['num_settlements'], 0, 500, civ_row, master=civ_frame); civ_row += 1
         self._create_slider_widget("Features:", self.params['num_features'], 0, 50, civ_row, master=civ_frame); civ_row += 1
+        self._create_slider_widget("Rivers:", self.params['num_rivers'], 0, 200, civ_row, master=civ_frame); civ_row += 1
+        self._create_slider_widget("Lake Coverage %:", self.params['lake_coverage'], 0, 100, civ_row, master=civ_frame); civ_row += 1
+        self._create_slider_widget("Named Lakes:", self.params['max_lakes_to_name'], 0, 50, civ_row, master=civ_frame); civ_row += 1
 
+        # --- Display Tab ---
         display_frame.grid_columnconfigure(1, weight=1)
         disp_row = 0
         style_frame = ttk.Frame(display_frame); style_frame.grid(row=disp_row, columnspan=2, sticky='ew', padx=5, pady=2); disp_row+=1
@@ -188,6 +214,7 @@ class App(tk.Tk):
         self.layers_frame.grid(row=disp_row, columnspan=2, sticky='ew', padx=5, pady=5); disp_row += 1
         self._create_layer_widgets()
 
+        # --- Simulator Tab ---
         sim_frame.grid_columnconfigure(1, weight=1)
         sf_row = 0
         ttk.Label(sim_frame, text="Event:").grid(row=sf_row, column=0, sticky='w', padx=5)
@@ -204,6 +231,7 @@ class App(tk.Tk):
         self.run_sim_button = ttk.Button(sim_frame, text="Run Simulation", command=self.start_age_simulation, state=tk.DISABLED)
         self.run_sim_button.grid(row=sf_row, column=0, columnspan=3, sticky='ew', padx=5, pady=5)
         
+        # --- Main Action Buttons ---
         self.progress = ttk.Progressbar(self.controls_frame, orient='horizontal', mode='determinate')
         self.progress.grid(row=row, columnspan=3, sticky='ew', pady=(5,0)); row += 1
         self.status_label = ttk.Label(self.controls_frame, text="Ready")
@@ -234,19 +262,25 @@ class App(tk.Tk):
         self.prev_frame_button = ttk.Button(frame_nav_frame, text="< Prev", command=self.show_previous_frame, state=tk.DISABLED); self.prev_frame_button.pack(side=tk.LEFT, padx=5)
         self.frame_label = ttk.Label(frame_nav_frame, text="0 / 0"); self.frame_label.pack(side=tk.LEFT, padx=5)
         self.next_frame_button = ttk.Button(frame_nav_frame, text="Next >", command=self.show_next_frame, state=tk.DISABLED); self.next_frame_button.pack(side=tk.LEFT, padx=5)
+        
         self.on_projection_change()
 
     def _create_layer_widgets(self):
         for widget in self.layers_frame.winfo_children(): widget.destroy()
         for name, var in self.layer_visibility.items(): var.trace_add('write', lambda *_, n=name: self.redraw_canvas())
+        
         ttk.Checkbutton(self.layers_frame, text="Settlements", variable=self.layer_visibility['Settlements']).grid(row=0, column=0, sticky='w', padx=5)
         ttk.Checkbutton(self.layers_frame, text="Features", variable=self.layer_visibility['Features']).grid(row=1, column=0, sticky='w', padx=5)
-        placemark_frame = ttk.Frame(self.layers_frame); placemark_frame.grid(row=2, column=0, columnspan=2, sticky='w')
+        ttk.Checkbutton(self.layers_frame, text="Rivers", variable=self.layer_visibility['Rivers']).grid(row=2, column=0, sticky='w', padx=5)
+
+        placemark_frame = ttk.Frame(self.layers_frame); placemark_frame.grid(row=3, column=0, columnspan=2, sticky='w')
         ttk.Checkbutton(placemark_frame, text="Placemarks", variable=self.layer_visibility['Placemarks']).pack(side=tk.LEFT, padx=5)
         ttk.Button(placemark_frame, text="Place Custom Feature...", command=self.open_placemark_dialog).pack(side=tk.LEFT, padx=5)
-        perspective_frame = ttk.Frame(self.layers_frame); perspective_frame.grid(row=3, column=0, columnspan=2, sticky='w', pady=(5,0))
+        
+        perspective_frame = ttk.Frame(self.layers_frame); perspective_frame.grid(row=4, column=0, columnspan=2, sticky='w', pady=(5,0))
         ttk.Button(perspective_frame, text="Set Perspective View...", command=self.set_perspective_view).pack(side=tk.LEFT, padx=5)
-        edit_frame = ttk.Labelframe(self.layers_frame, text="Editor"); edit_frame.grid(row=4, column=0, columnspan=2, sticky='ew', pady=(10,0), padx=5)
+        
+        edit_frame = ttk.Labelframe(self.layers_frame, text="Editor"); edit_frame.grid(row=5, column=0, columnspan=2, sticky='ew', pady=(10,0), padx=5)
         ttk.Checkbutton(edit_frame, text="Edit Mode", variable=self.edit_mode, command=self._toggle_edit_mode).pack(side=tk.LEFT, padx=5)
         self.selection_info_frame = ttk.Frame(edit_frame)
         self.selection_name_label = ttk.Label(self.selection_info_frame, text="", wraplength=150)
@@ -355,7 +389,6 @@ class App(tk.Tk):
         self.placing_feature_info = None; self.canvas.config(cursor=""); self.status_label.config(text="Ready"); self.redraw_canvas()
 
     def _on_map_hover(self, event):
-        # BUGFIX: Changed `not self.generator.color_map` to `self.generator.color_map is None`
         if self.placing_feature_info or not self.generator or self.generator.color_map is None:
             self.tooltip.hide()
             return
@@ -363,23 +396,44 @@ class App(tk.Tk):
         map_x, map_y = self.canvas_to_image_coords(event.x, event.y)
         if map_x is not None and 0 <= map_x < self.generator.x_range and 0 <= map_y < self.generator.y_range:
             elevation = self.generator.world_map.T[map_y, map_x]
-            final_name = self.get_biome_name_from_index(self.generator.color_map.T[map_y, map_x])
-            display_text = final_name
-            if final_name and final_name.lower() == "polar ice" and self.generator.color_map_before_ice is not None:
+            color_index = self.generator.color_map.T[map_y, map_x]
+            
+            display_text = None
+            
+            # Check for named water body first
+            if not self.generator.land_mask.T[map_y, map_x] and self.generator.labeled_water is not None:
+                water_label = self.generator.labeled_water.T[map_y, map_x]
+                if water_label in self.feature_name_lookup:
+                    display_text = self.feature_name_lookup[water_label]
+
+            # If not a named water body, get biome name
+            if display_text is None:
+                display_text = self.get_biome_name_from_index(color_index)
+
+            # Handle ice overlay text
+            if display_text and display_text.lower() == "polar ice" and self.generator.color_map_before_ice is not None:
                 underlying_name = self.get_biome_name_from_index(self.generator.color_map_before_ice.T[map_y, map_x])
-                if underlying_name and underlying_name.lower() != "polar ice": display_text = f"Polar Ice (over {underlying_name})"
-            if display_text: self.tooltip.show(f"{display_text}\nCoords: ({map_x}, {map_y})\nElevation: {elevation}", event.x_root, event.y_root)
-            else: self.tooltip.hide()
-        else: self.tooltip.hide()
+                if underlying_name and underlying_name.lower() != "polar ice":
+                     display_text = f"Polar Ice (over {underlying_name})"
+
+            if display_text:
+                self.tooltip.show(f"{display_text}\nCoords: ({map_x}, {map_y})\nElevation: {elevation:.2f}", event.x_root, event.y_root)
+            else:
+                self.tooltip.hide()
+        else:
+            self.tooltip.hide()
 
     def _on_map_leave(self, event): self.tooltip.hide()
         
     def get_biome_name_from_index(self, index):
         if self.params['map_style'].get() == 'Biome':
-            if 56<=index<=59: return "Alpine Glacier"
-            if 52<=index<=55: return "Polar Ice"
             for name, props in BIOME_DEFINITIONS.items():
-                if props['idx'] <= index < props['idx'] + props.get('shades', 1) and name not in ['glacier', 'alpine_glacier']: return name.replace('_', ' ').title()
+                if 'shades' in props:
+                    if props['idx'] <= index < props['idx'] + props['shades']:
+                        return name.replace('_', ' ').title()
+                elif props['idx'] == index:
+                    return name.replace('_', ' ').title()
+        # Fallback for terrain or unknown
         if 1<=index<=7: return "Water"
         if 16<=index<=31: return "Land"
         return "Unknown"
@@ -399,7 +453,7 @@ class App(tk.Tk):
         self.set_ui_state(is_generating=True)
         self.frame_viewer_frame.grid_remove()
         self.simulation_frames, self.current_frame_index = [], -1
-        self.layers = {'settlements':[], 'placemarks':[], 'natural_features': {'peaks':[], 'ranges':[], 'areas':[], 'bays':[]}}
+        self.layers = {'settlements':[], 'placemarks':[], 'rivers': [], 'natural_features': {'peaks':[], 'ranges':[], 'areas':[], 'bays':[]}}
         self.zoom, self.view_offset = 1.0, [0, 0]
         self.cached_globe_source_image = None
         params_dict = {key: var.get() for key, var in self.params.items() if key != 'world_size_preset'}
@@ -418,9 +472,19 @@ class App(tk.Tk):
 
     def finalize_generation(self):
         self.layers['settlements'].extend(self.generator.settlements)
+        self.layers['rivers'].extend(self.generator.rivers)
+        self.feature_name_lookup = {} # New lookup dict
         for key, value in self.generator.natural_features.items():
-            if key in self.layers['natural_features']: self.layers['natural_features'][key].extend(value)
-            else: self.layers['natural_features'][key] = value
+            if key in self.layers['natural_features']:
+                self.layers['natural_features'][key].extend(value)
+            else:
+                self.layers['natural_features'][key] = value
+            # Populate the lookup dict
+            if key == 'areas':
+                for feature in value:
+                    if 'label' in feature:
+                        self.feature_name_lookup[feature['label']] = feature['name']
+
         self.cached_globe_source_image = None
         self.redraw_canvas()
         self.set_ui_state(is_generating=False)
@@ -495,7 +559,29 @@ class App(tk.Tk):
 
     def _draw_layers_on_canvas_2d(self):
         self.canvas.delete("overlay")
-        self._draw_features_on_canvas_2d(); self._draw_settlements_on_canvas_2d(); self._draw_placemarks_on_canvas_2d(); self._draw_selection_highlight_on_canvas_2d()
+        self._draw_rivers_on_canvas_2d()
+        self._draw_features_on_canvas_2d()
+        self._draw_settlements_on_canvas_2d()
+        self._draw_placemarks_on_canvas_2d()
+        self._draw_selection_highlight_on_canvas_2d()
+
+    def _draw_rivers_on_canvas_2d(self):
+        if not self.layer_visibility['Rivers'].get() or 'rivers' not in self.layers: return
+        river_color = "#6699FF" # A light blue for rivers
+        for river in self.layers.get('rivers', []):
+            if len(river['path']) < 2: continue
+            
+            # Convert all points at once
+            path_points = [self.image_to_canvas_coords(p[0], p[1]) for p in river['path']]
+            
+            # Filter out points that are off-canvas
+            valid_points = [p for p in path_points if p[0] is not None]
+            
+            if len(valid_points) > 1:
+                # Flatten the list for create_line
+                flat_points = [coord for point in valid_points for coord in point]
+                width = min(5, 1 + math.log(river['flow'] + 1))
+                self.canvas.create_line(*flat_points, fill=river_color, width=width, tags="overlay", capstyle=tk.ROUND, joinstyle=tk.ROUND)
 
     def _draw_features_on_canvas_2d(self):
         if not self.layer_visibility['Features'].get() or 'natural_features' not in self.layers: return
@@ -627,6 +713,14 @@ class App(tk.Tk):
                 draw.text((x-stroke_width, y), text, font=font, fill=stroke_fill, **kwargs); draw.text((x+stroke_width, y), text, font=font, fill=stroke_fill, **kwargs)
                 draw.text((x, y-stroke_width), text, font=font, fill=stroke_fill, **kwargs); draw.text((x, y+stroke_width), text, font=font, fill=stroke_fill, **kwargs)
                 draw.text(pos, text, font=font, fill=fill, **kwargs)
+            
+            if self.layer_visibility['Rivers'].get():
+                river_color = "#4a7fdd"
+                for river in self.layers.get('rivers', []):
+                    if len(river['path']) < 2: continue
+                    width = min(5, 1 + math.log(river['flow'] + 1))
+                    draw.line(river['path'], fill=river_color, width=int(width), joint='curve')
+
             if self.layer_visibility['Features'].get():
                 for area in self.layers['natural_features'].get('areas',[]): draw_outlined_text((int(area['center'][0]), int(area['center'][1])), area['name'], font_l, "#DDEEFF", anchor="mm")
                 for r in self.layers['natural_features'].get('ranges',[]): draw_outlined_text((int(r['center'][0]), int(r['center'][1])), r['name'], font_l, "#D2B48C", anchor="mm")
@@ -649,10 +743,20 @@ class App(tk.Tk):
             except IOError: font_l,font_m,font_s = ImageFont.load_default(), ImageFont.load_default(), ImageFont.load_default()
             def draw_outlined_text(draw_context, pos, text, font, fill, **kwargs):
                 x,y=pos; sf,sw='black',1; draw_context.text((x-sw,y),text,font=font,fill=sf,**kwargs); draw_context.text((x+sw,y),text,font=font,fill=sf,**kwargs); draw_context.text((x,y-sw),text,font=font,fill=sf,**kwargs); draw_context.text((x,y+sw),text,font=font,fill=sf,**kwargs); draw_context.text(pos,text,font=font,fill=fill,**kwargs)
+            
             self.generator.pil_image.save(os.path.join(directory_path, "00_background.png"))
+
+            if self.layer_visibility['Rivers'].get() and self.layers['rivers']:
+                layer_img=Image.new("RGBA",(w,h),(0,0,0,0)); draw=ImageDraw.Draw(layer_img)
+                river_color = "#4a7fdd"
+                for river in self.layers.get('rivers', []):
+                    if len(river['path']) < 2: continue
+                    width = min(5, 1 + math.log(river['flow'] + 1))
+                    draw.line(river['path'], fill=river_color, width=int(width), joint='curve')
+                layer_img.save(os.path.join(directory_path, "01_rivers.png"))
+
             if self.layer_visibility['Features'].get():
-                # BUGFIX: Corrected anchor arguments to PIL format (e.g., "ms", "mm")
-                layer_defs = [('areas','01_areas.png',font_l,"#DDEEFF", "mm"), ('ranges','02_ranges.png',font_l,"#D2B48C", "mm"), ('peaks','03_peaks.png',font_s,"white", "ms")]
+                layer_defs = [('areas','02_areas.png',font_l,"#DDEEFF", "mm"), ('ranges','03_ranges.png',font_l,"#D2B48C", "mm"), ('peaks','04_peaks.png',font_s,"white", "ms")]
                 for key, fname, font, color, anchor in layer_defs:
                     if not self.layers['natural_features'].get(key): continue
                     layer_img=Image.new("RGBA",(w,h),(0,0,0,0)); draw=ImageDraw.Draw(layer_img)
@@ -664,11 +768,11 @@ class App(tk.Tk):
             if self.layer_visibility['Settlements'].get() and self.layers['settlements']:
                 layer_img=Image.new("RGBA",(w,h),(0,0,0,0)); draw=ImageDraw.Draw(layer_img)
                 for s in self.layers['settlements']: x,y=int(s['x']),int(s['y']); draw.ellipse((x-3,y-3,x+3,y+3),fill='white',outline='black'); draw_outlined_text(draw,(x+5,y),s['name'],font_s,"white",anchor="lm")
-                layer_img.save(os.path.join(directory_path, "04_settlements.png"))
+                layer_img.save(os.path.join(directory_path, "05_settlements.png"))
             if self.layer_visibility['Placemarks'].get() and self.layers['placemarks']:
                 layer_img=Image.new("RGBA",(w,h),(0,0,0,0)); draw=ImageDraw.Draw(layer_img)
                 for pm in self.layers['placemarks']: x,y=int(pm['x']),int(pm['y']); draw.ellipse((x-4,y-4,x+4,y+4),fill='red',outline='black'); draw_outlined_text(draw,(x+6,y),pm['name'],font_m,"white",anchor="lm")
-                layer_img.save(os.path.join(directory_path, "05_placemarks.png"))
+                layer_img.save(os.path.join(directory_path, "06_placemarks.png"))
             tk.messagebox.showinfo("Success", f"Layers saved successfully to:\n{directory_path}")
         except Exception as e: tk.messagebox.showerror("Save Error", f"Failed to save layers:\n{e}")
 
@@ -686,7 +790,7 @@ class App(tk.Tk):
             with open(file_path, 'r', encoding='utf-8') as f: loaded_params = json.load(f)
             for key, var in self.params.items():
                 if key in loaded_params: var.set(loaded_params[key])
-            self.layers = {'settlements': [], 'placemarks': [], 'natural_features': {'peaks': [], 'ranges': [], 'areas': [], 'bays': []}}
+            self.layers = {'settlements': [], 'placemarks': [], 'rivers': [], 'natural_features': {'peaks': [], 'ranges': [], 'areas': [], 'bays': []}}
             self.pil_image, self.generator = None, None
             self.canvas.delete("all"); self.status_label.config(text="Preset loaded. Click 'Regenerate World'.")
             self.on_projection_change(); self.on_style_change()
