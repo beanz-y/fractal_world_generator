@@ -56,14 +56,15 @@ class App(tk.Tk):
         self.world_circumference_km = 1600.0
         
         self.layers = {
-            'settlements': [], 'placemarks': [], 'rivers': [],
+            'settlements': [], 'placemarks': [], 'rivers': [], 'borders': [],
             'natural_features': {'peaks': [], 'ranges': [], 'areas': []}
         }
         self.layer_visibility = {
             'Settlements': tk.BooleanVar(value=True),
             'Placemarks': tk.BooleanVar(value=True),
             'Features': tk.BooleanVar(value=True),
-            'Rivers': tk.BooleanVar(value=True)
+            'Rivers': tk.BooleanVar(value=True),
+            'Borders': tk.BooleanVar(value=True)
         }
         
         self.placing_feature_info = None
@@ -115,7 +116,10 @@ class App(tk.Tk):
             'num_features': tk.IntVar(value=10),
             'num_rivers': tk.IntVar(value=50),
             'lake_coverage': tk.DoubleVar(value=50.0),
-            'max_lakes_to_name': tk.IntVar(value=20)
+            'max_lakes_to_name': tk.IntVar(value=20),
+            'num_kingdoms': tk.IntVar(value=8),
+            'mountain_cost': tk.DoubleVar(value=8.0),
+            'hill_cost': tk.DoubleVar(value=3.0)
         }
         self._create_control_widgets()
         self.tooltip = MapTooltip(self)
@@ -126,7 +130,24 @@ class App(tk.Tk):
         self.canvas.bind("<B1-Motion>", self._on_pan_move)
         self.canvas.bind("<Motion>", self._on_map_hover)
         self.canvas.bind("<Leave>", self._on_map_leave)
+
+    def _draw_borders_on_canvas_2d(self):
+        if not self.layer_visibility['Borders'].get() or 'borders' not in self.layers or not self.layers['borders']:
+            return
         
+        total_points = sum(len(k.get('border_points', [])) for k in self.layers['borders'])
+        print(f"DEBUG: Drawing {len(self.layers['borders'])} borders with a total of {total_points} points.")
+
+        for kingdom in self.layers['borders']:
+            color = kingdom.get('color', 'white')
+            for p in kingdom.get('border_points', []):
+                # p[0] is x, p[1] is y
+                cx, cy = self.image_to_canvas_coords(p[0], p[1])
+                if cx is not None:
+                    # --- THIS IS THE FIX ---
+                    # Use the correct canvas coordinates (cx, cy) to draw the oval.
+                    self.canvas.create_oval(cx - 1, cy - 1, cx + 1, cy + 1, fill=color, outline="", tags="overlay")
+
     def _create_control_widgets(self):
         row = 0
         self.controls_frame.grid_columnconfigure(1, weight=1)
@@ -184,6 +205,14 @@ class App(tk.Tk):
         self._create_slider_widget("Rivers:", self.params['num_rivers'], 0, 200, civ_row, master=civ_frame); civ_row += 1
         self._create_slider_widget("Lake Coverage %:", self.params['lake_coverage'], 0, 100, civ_row, master=civ_frame); civ_row += 1
         self._create_slider_widget("Named Lakes:", self.params['max_lakes_to_name'], 0, 50, civ_row, master=civ_frame); civ_row += 1
+
+        politics_frame = ttk.Labelframe(civ_frame, text="Politics", padding=5)
+        politics_frame.grid(row=civ_row, column=0, columnspan=2, sticky='ew', padx=5, pady=(10,0)); civ_row += 1
+        politics_frame.columnconfigure(1, weight=1)
+        p_row = 0
+        self._create_slider_widget("Kingdoms:", self.params['num_kingdoms'], 2, 50, p_row, master=politics_frame); p_row += 1
+        self._create_slider_widget("Mtn. Cost:", self.params['mountain_cost'], 1.0, 20.0, p_row, master=politics_frame); p_row += 1
+        self._create_slider_widget("Hill Cost:", self.params['hill_cost'], 1.0, 10.0, p_row, master=politics_frame); p_row += 1
 
         # --- Display Tab ---
         display_frame.grid_columnconfigure(1, weight=1)
@@ -273,14 +302,19 @@ class App(tk.Tk):
         ttk.Checkbutton(self.layers_frame, text="Features", variable=self.layer_visibility['Features']).grid(row=1, column=0, sticky='w', padx=5)
         ttk.Checkbutton(self.layers_frame, text="Rivers", variable=self.layer_visibility['Rivers']).grid(row=2, column=0, sticky='w', padx=5)
 
-        placemark_frame = ttk.Frame(self.layers_frame); placemark_frame.grid(row=3, column=0, columnspan=2, sticky='w')
+        ttk.Checkbutton(self.layers_frame, text="Borders", variable=self.layer_visibility['Borders']).grid(row=3, column=0, sticky='w', padx=5)
+
+        placemark_frame = ttk.Frame(self.layers_frame); placemark_frame.grid(row=4, column=0, columnspan=2, sticky='w') # Changed row to 4
         ttk.Checkbutton(placemark_frame, text="Placemarks", variable=self.layer_visibility['Placemarks']).pack(side=tk.LEFT, padx=5)
         ttk.Button(placemark_frame, text="Place Custom Feature...", command=self.open_placemark_dialog).pack(side=tk.LEFT, padx=5)
         
-        perspective_frame = ttk.Frame(self.layers_frame); perspective_frame.grid(row=4, column=0, columnspan=2, sticky='w', pady=(5,0))
+        self.regen_borders_button = ttk.Button(self.layers_frame, text="Regenerate Borders", command=self.regenerate_borders, state=tk.DISABLED)
+        self.regen_borders_button.grid(row=0, column=1, padx=5, sticky='e') # Place it on the right
+
+        perspective_frame = ttk.Frame(self.layers_frame); perspective_frame.grid(row=5, column=0, columnspan=2, sticky='w', pady=(5,0)) # Changed row to 5
         ttk.Button(perspective_frame, text="Set Perspective View...", command=self.set_perspective_view).pack(side=tk.LEFT, padx=5)
-        
-        edit_frame = ttk.Labelframe(self.layers_frame, text="Editor"); edit_frame.grid(row=5, column=0, columnspan=2, sticky='ew', pady=(10,0), padx=5)
+
+        edit_frame = ttk.Labelframe(self.layers_frame, text="Editor"); edit_frame.grid(row=6, column=0, columnspan=2, sticky='ew', pady=(10,0), padx=5) # Changed row to 6
         ttk.Checkbutton(edit_frame, text="Edit Mode", variable=self.edit_mode, command=self._toggle_edit_mode).pack(side=tk.LEFT, padx=5)
         self.selection_info_frame = ttk.Frame(edit_frame)
         self.selection_name_label = ttk.Label(self.selection_info_frame, text="", wraplength=150)
@@ -440,7 +474,7 @@ class App(tk.Tk):
         
     def set_ui_state(self, is_generating):
         state = tk.DISABLED if is_generating else tk.NORMAL
-        widget_list = [self.generate_button, self.random_button, self.recolor_button, self.palette_button, self.save_button, self.save_layers_button, self.palette_combobox, self.run_sim_button]
+        widget_list = [self.generate_button, self.random_button, self.recolor_button, self.palette_button, self.save_button, self.save_layers_button, self.palette_combobox, self.run_sim_button, self.regen_borders_button] # <-- ADD BUTTON HERE
         for widget in widget_list:
             if widget in [self.generate_button, self.random_button]: widget.config(state=state)
             else: widget.config(state=tk.NORMAL if not is_generating and self.generator else tk.DISABLED)
@@ -453,7 +487,7 @@ class App(tk.Tk):
         self.set_ui_state(is_generating=True)
         self.frame_viewer_frame.grid_remove()
         self.simulation_frames, self.current_frame_index = [], -1
-        self.layers = {'settlements':[], 'placemarks':[], 'rivers': [], 'natural_features': {'peaks':[], 'ranges':[], 'areas':[], 'bays':[]}}
+        self.layers = {'settlements':[], 'placemarks':[], 'rivers': [], 'borders': [], 'natural_features': {'peaks':[], 'ranges':[], 'areas':[], 'bays':[]}} # <-- ADD 'borders': []
         self.zoom, self.view_offset = 1.0, [0, 0]
         self.cached_globe_source_image = None
         params_dict = {key: var.get() for key, var in self.params.items() if key != 'world_size_preset'}
@@ -473,6 +507,7 @@ class App(tk.Tk):
     def finalize_generation(self):
         self.layers['settlements'].extend(self.generator.settlements)
         self.layers['rivers'].extend(self.generator.rivers)
+        self.layers['borders'].extend(self.generator.borders)
         self.feature_name_lookup = {} # New lookup dict
         for key, value in self.generator.natural_features.items():
             if key in self.layers['natural_features']:
@@ -559,6 +594,7 @@ class App(tk.Tk):
 
     def _draw_layers_on_canvas_2d(self):
         self.canvas.delete("overlay")
+        self._draw_borders_on_canvas_2d()
         self._draw_rivers_on_canvas_2d()
         self._draw_features_on_canvas_2d()
         self._draw_settlements_on_canvas_2d()
@@ -790,7 +826,8 @@ class App(tk.Tk):
             with open(file_path, 'r', encoding='utf-8') as f: loaded_params = json.load(f)
             for key, var in self.params.items():
                 if key in loaded_params: var.set(loaded_params[key])
-            self.layers = {'settlements': [], 'placemarks': [], 'rivers': [], 'natural_features': {'peaks': [], 'ranges': [], 'areas': [], 'bays': []}}
+            # --- THIS LINE IS THE FIX ---
+            self.layers = {'settlements': [], 'placemarks': [], 'rivers': [], 'borders': [], 'natural_features': {'peaks': [], 'ranges': [], 'areas': [], 'bays': []}}
             self.pil_image, self.generator = None, None
             self.canvas.delete("all"); self.status_label.config(text="Preset loaded. Click 'Regenerate World'.")
             self.on_projection_change(); self.on_style_change()
@@ -898,6 +935,34 @@ class App(tk.Tk):
         if not self.generator or not self.generator.pil_image: tk.messagebox.showwarning("No Map", "Please generate a map first."); return
         if self.perspective_viewer_instance and self.perspective_viewer_instance.winfo_exists(): self.perspective_viewer_instance.lift(); return
         self.placing_feature_info = {'type': 'PERSPECTIVE_VIEW'}; self.canvas.config(cursor="crosshair"); self.status_label.config(text="Click to set camera position...")
+
+    def regenerate_borders(self):
+        if not self.generator or not self.generator.settlements:
+            tk.messagebox.showwarning("Cannot Generate Borders", "Please generate a world with settlements first.", parent=self)
+            return
+
+        border_params = {
+            'num_kingdoms': self.params['num_kingdoms'].get(),
+            'mountain_cost': self.params['mountain_cost'].get(),
+            'hill_cost': self.params['hill_cost'].get(),
+        }
+
+        self.set_ui_state(is_generating=True)
+        self.status_label.config(text="Regenerating political borders...")
+        thread = threading.Thread(target=self.run_border_generation_in_thread, args=(border_params,), daemon=True)
+        thread.start()
+
+    def run_border_generation_in_thread(self, border_params):
+        """Runs the border generation in a separate thread to avoid freezing the UI."""
+        self.generator.generate_borders(border_params)
+        self.after(0, self.finalize_border_generation)
+
+    def finalize_border_generation(self):
+        """Updates the UI after the border generation thread is complete."""
+        self.layers['borders'] = list(self.generator.borders)
+        self.set_ui_state(is_generating=False)
+        self.status_label.config(text="Ready")
+        self.redraw_canvas()
 
 if __name__ == "__main__":
     app = App()

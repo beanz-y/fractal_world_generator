@@ -1,34 +1,10 @@
 # beanz-y/fractal_world_generator/fractal_world_generator-28f75751b57dacf83432892d2293f1e3754a3ba6/world_generator.py
-#
-# --- CHANGELOG ---
-# 1. Revert: Plate Tectonics model has been temporarily removed to focus on other features.
-# 2. Feature: River Generation
-#    - Implemented a `_generate_rivers` method that carves river networks into the landscape.
-#    - Rivers originate in high-altitude, high-moisture areas and flow to the sea.
-#    - Settlement generation is now heavily influenced by proximity to rivers.
-# 3. Feature: Enhanced Climate Simulation
-#    - Added `_simulate_ocean_currents` to create more realistic sea temperatures.
-#    - Introduced a "Season" parameter to affect global temperatures and ice coverage.
-#    - Improved the rainfall simulation for more pronounced rain shadows.
-# 4. Bugfix: Corrected a ValueError in `_apply_biomes` by fixing array broadcasting for temperature calculation.
-# 5. Bugfix: Fixed an IndexError in `generate_natural_features` by correcting the peak-finding logic to handle array axes properly.
-# 6. Bugfix: Corrected coordinate calculation in `_find_features` to prevent misplacing feature names.
-# 7. Enhancement: Realistic River and Lake Generation
-#    - Replaced the simple river algorithm with a hydrologically-sound model.
-#    - Implemented a depression-filling algorithm to create inland lakes where water would naturally pool.
-#    - Rivers are now guaranteed to flow to a lake or the ocean, carving channels into the terrain as they go.
-# 8. Enhancement: Controllable Lake Coverage & Diverse River Origins
-#    - Added a `lake_coverage` parameter to control what percentage of potential lakes are formed.
-#    - Diversified river origins by lowering the elevation requirement, allowing rivers to form in wet, non-mountainous regions.
-# 9. Bugfix: Correctly classify inland lakes vs. oceans/seas in the feature naming process.
-# 10. Enhancement: Prevented lakes from forming in desert biomes and added control over the number of named lakes.
-# 11. Bugfix: Passed the `labeled_water` map to the main app to enable accurate tooltips for water bodies.
-# -----------------
 
 import numpy as np
 import random
 import math
 from PIL import Image
+from skimage.graph import MCP_Flexible as MCP
 from utils import SimplexNoise, generate_contextual_name, generate_fantasy_name
 from constants import BIOME_DEFINITIONS, THEME_NAME_FRAGMENTS
 import numba
@@ -185,6 +161,7 @@ class FractalWorldGenerator:
         self.major_features = []
         self.used_names = set()
         self.rivers = []
+        self.borders = []
 
     def set_ice_seed(self, seed):
         self.ice_noise = SimplexNoise(seed=seed)
@@ -241,11 +218,11 @@ class FractalWorldGenerator:
         return self.world_map
 
     @staticmethod
-    @numba.jit(nopython=True)
+    @numba.jit(nopython=True, parallel=True, fastmath=True)
     def _numba_apply_erosion(heightmap, x_range, y_range, erosion_passes):
         for _ in range(erosion_passes):
             source_map = heightmap.copy()
-            for y in range(y_range):
+            for y in numba.prange(y_range):
                 for x in range(x_range):
                     current_height = source_map[x, y]
                     lowest_neighbor_height = current_height
@@ -259,8 +236,9 @@ class FractalWorldGenerator:
                                 lowest_nx, lowest_ny = nx, ny
                     if lowest_neighbor_height < current_height:
                         sediment_amount = (current_height - lowest_neighbor_height) * 0.1
+                        # Explicitly cast indices to int to resolve type inference ambiguity
                         heightmap[x, y] -= sediment_amount
-                        heightmap[lowest_nx, lowest_ny] += sediment_amount
+                        heightmap[int(lowest_nx), int(lowest_ny)] += sediment_amount
         return heightmap
 
     def _apply_erosion(self, erosion_passes):
@@ -404,6 +382,13 @@ class FractalWorldGenerator:
         self.used_names, self.major_features = set(), []
         self.natural_features = self.generate_natural_features()
         self.generate_settlements()
+
+        default_border_params = {
+            'num_kingdoms': self.params.get('num_kingdoms', 8),
+            'mountain_cost': self.params.get('mountain_cost', 8.0),
+            'hill_cost': self.params.get('hill_cost', 3.0),
+        }
+        self.generate_borders(default_border_params)      
         
         if self.progress_callback: self.progress_callback(99, "Creating image...")
         self.pil_image = self.create_image()
@@ -610,7 +595,10 @@ class FractalWorldGenerator:
                 context = self._find_nearest_major_feature(x, y)
                 name = generate_contextual_name(name_fragments, self.used_names, context)
                 stype = random.choice(name_fragments['types'])
-                self.settlements.append({'x': x, 'y': y, 'name': name, 'type': 'settlement', 'stype': stype})
+                # --- THIS IS THE FIX ---
+                # We now save the suitability score with the settlement.
+                suitability_score = flat_suitability[idx]
+                self.settlements.append({'x': x, 'y': y, 'name': name, 'type': 'settlement', 'stype': stype, 'suitability': suitability_score})
 
     def _find_nearest_major_feature(self, x, y):
         if not self.major_features: return None
@@ -753,3 +741,86 @@ class FractalWorldGenerator:
         rgb_map = palette_array[clipped_color_map.T]
 
         return Image.fromarray(rgb_map, 'RGB')
+    
+    def generate_borders(self, border_params):
+        """
+        Generates political borders based on settlement influence and terrain cost.
+        """
+        if self.progress_callback: self.progress_callback(0, "Calculating political borders...")
+
+        num_kingdoms = border_params.get('num_kingdoms', 8)
+        mountain_cost = border_params.get('mountain_cost', 8.0)
+        hill_cost = border_params.get('hill_cost', 3.0)
+
+        if not hasattr(self, 'settlements') or not self.settlements or num_kingdoms <= 0:
+            self.borders = []
+            return
+
+        if 'suitability' in self.settlements[0]:
+             capitals = sorted(self.settlements, key=lambda s: s.get('suitability', 0), reverse=True)[:num_kingdoms]
+        else:
+             capitals = self.settlements[:num_kingdoms]
+
+        if not capitals:
+            self.borders = []
+            return
+
+        if self.progress_callback: self.progress_callback(20, "Analyzing terrain travel cost...")
+        
+        grad_y, grad_x = np.gradient(self.world_map.astype(np.float32))
+        slope = np.sqrt(grad_x**2 + grad_y**2)
+        
+        cost_map = np.ones_like(self.world_map, dtype=np.float32)
+        
+        land_slopes = slope[self.land_mask]
+        if land_slopes.size > 0:
+            hill_threshold = np.percentile(land_slopes, 60)
+            mountain_threshold = np.percentile(land_slopes, 85)
+            cost_map[slope >= hill_threshold] = hill_cost
+            cost_map[slope >= mountain_threshold] = mountain_cost
+
+        cost_map[~self.land_mask] = 10000.0
+
+        if self.progress_callback: self.progress_callback(50, "Calculating kingdom influence...")
+        
+        all_cost_surfaces = []
+        cost_map_transposed = cost_map.T # Transpose once before the loop
+
+        for i, capital in enumerate(capitals):
+            if self.progress_callback: self.progress_callback(50 + int(40 * (i / len(capitals))), f"Calculating influence for capital {i+1}...")
+            
+            # --- THIS IS THE FIX ---
+            # Create a new MCP object for each capital to ensure a clean state.
+            mcp = MCP(cost_map_transposed)
+            
+            starts = np.array([[capital['y'], capital['x']]])
+            cost_surface_2d, _ = mcp.find_costs(starts)
+            all_cost_surfaces.append(cost_surface_2d)
+
+        stacked_surfaces = np.stack(all_cost_surfaces, axis=0)
+        region_map = np.argmin(stacked_surfaces, axis=0)
+
+        if self.progress_callback: self.progress_callback(90, "Drawing border lines...")
+        borders_mask = np.zeros_like(region_map, dtype=bool)
+        
+        borders_mask[:-1, :] |= (region_map[:-1, :] != region_map[1:, :])
+        borders_mask[:, :-1] |= (region_map[:, :-1] != region_map[:, 1:])
+
+        region_map = region_map.T
+        borders_mask = borders_mask.T
+
+        hues = np.linspace(0, 1, len(capitals), endpoint=False)
+        colors = [f'#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}' for r, g, b in [Image.new("RGB", (1,1), color=f"hsv({int(h*360)}, 80%, 90%)").getpixel((0,0)) for h in hues]]
+        
+        self.borders = []
+        for i, capital in enumerate(capitals):
+            kingdom_border_mask = borders_mask & (region_map == i)
+            points = np.argwhere(kingdom_border_mask)
+            
+            self.borders.append({
+                'capital': capital,
+                'color': colors[i],
+                'border_points': [tuple(p) for p in points]
+            })
+
+        if self.progress_callback: self.progress_callback(100, "Borders generated.")
